@@ -65,10 +65,13 @@ function setupPeriod() {
 
 function query(extra = {}) {
   const params = new URLSearchParams({
-    month: $("#filterMonth").value,
-    year: $("#filterYear").value,
+    month: $("#filterMonth")?.value || "",
+    year: $("#filterYear")?.value || "",
     ...extra,
   });
+  if (state.user?.profile === "superadmin" && $("#filterUser")?.value) {
+    params.set("user_id", $("#filterUser").value);
+  }
   Object.entries(extra).forEach(([k, v]) => { if (!v) params.delete(k); });
   return params.toString();
 }
@@ -122,6 +125,17 @@ async function loadCategories() {
   $("#incomeCategory").innerHTML = `<option value="">Todas categorias</option>${opts}`;
 }
 
+async function loadUserOptions() {
+  if (state.user?.profile !== "superadmin") return;
+  const data = await api("/api/users");
+  state.users = data.users;
+  const options = data.users.map((user) => `<option value="${user.id}">${escapeHtml(user.full_name || user.username)} (${escapeHtml(user.username)})</option>`).join("");
+  const select = $("#filterUser");
+  if (select) {
+    select.innerHTML = `<option value="">Todos os usuarios</option>${options}`;
+  }
+}
+
 async function loadDashboard() {
   const data = await api(`/api/dashboard?${query()}`);
   $("#cardPending").textContent = money(data.cards.total_pending);
@@ -149,8 +163,8 @@ function renderMiniList(selector, items) {
 }
 
 async function loadExpenses() {
-  const status = $("#expenseStatus").value;
-  const category = $("#expenseCategory").value;
+  const status = $("#expenseStatus")?.value || "";
+  const category = $("#expenseCategory")?.value || "";
   const data = await api(`/api/expenses?${query({ status, category })}`);
   state.expenses = data.expenses;
   $("#expenseCount").textContent = data.expenses.length;
@@ -171,8 +185,8 @@ async function loadExpenses() {
 }
 
 async function loadIncomes() {
-  const status = $("#incomeStatus").value;
-  const category = $("#incomeCategory").value;
+  const status = $("#incomeStatus")?.value || "";
+  const category = $("#incomeCategory")?.value || "";
   const data = await api(`/api/incomes?${query({ status, category })}`);
   state.incomes = data.incomes;
   $("#incomeCount").textContent = data.incomes.length;
@@ -257,6 +271,43 @@ function clearForm(form) {
   if (form.elements.id) form.elements.id.value = "";
 }
 
+function setPeriodFromDate(value) {
+  if (!value) return;
+  const [year, month] = value.split("-");
+  if (year && month && $("#filterYear") && $("#filterMonth")) {
+    $("#filterYear").value = year;
+    $("#filterMonth").value = String(Number(month));
+  }
+}
+
+function clearUserFilterForOwnSave() {
+  if (state.user?.profile === "superadmin" && $("#filterUser")) {
+    $("#filterUser").value = "";
+  }
+}
+
+function revealSavedExpense(data) {
+  setPeriodFromDate(data.due_date);
+  clearUserFilterForOwnSave();
+  if ($("#expenseStatus") && $("#expenseStatus").value && $("#expenseStatus").value !== data.status) {
+    $("#expenseStatus").value = "";
+  }
+  if ($("#expenseCategory") && $("#expenseCategory").value && $("#expenseCategory").value !== data.category) {
+    $("#expenseCategory").value = "";
+  }
+}
+
+function revealSavedIncome(data) {
+  setPeriodFromDate(data.receipt_date);
+  clearUserFilterForOwnSave();
+  if ($("#incomeStatus") && $("#incomeStatus").value && $("#incomeStatus").value !== data.status) {
+    $("#incomeStatus").value = "";
+  }
+  if ($("#incomeCategory") && $("#incomeCategory").value && $("#incomeCategory").value !== data.category) {
+    $("#incomeCategory").value = "";
+  }
+}
+
 async function saveExpense(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -264,9 +315,11 @@ async function saveExpense(event) {
   const id = data.id;
   delete data.id;
   await api(id ? `/api/expenses/${id}` : "/api/expenses", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
+  revealSavedExpense(data);
   clearForm(form);
   toast("Conta salva.");
   await loadExpenses();
+  if (state.view === "expenses") await loadDashboard().catch(() => {});
 }
 
 async function saveIncome(event) {
@@ -276,9 +329,11 @@ async function saveIncome(event) {
   const id = data.id;
   delete data.id;
   await api(id ? `/api/incomes/${id}` : "/api/incomes", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
+  revealSavedIncome(data);
   clearForm(form);
   toast("Receita salva.");
   await loadIncomes();
+  if (state.view === "incomes") await loadDashboard().catch(() => {});
 }
 
 async function saveUser(event) {
@@ -292,6 +347,7 @@ async function saveUser(event) {
   clearForm(form);
   toast("Usuario salvo.");
   await loadUsers();
+  await loadUserOptions();
 }
 
 async function registerAccount(event) {
@@ -375,6 +431,7 @@ window.toggleUser = async (id) => {
   await api(`/api/users/${id}/toggle`, { method: "POST", body: "{}" });
   toast("Status do usuario atualizado.");
   await loadUsers();
+  await loadUserOptions();
 };
 
 window.deleteUser = async (id) => {
@@ -382,6 +439,7 @@ window.deleteUser = async (id) => {
   await api(`/api/users/${id}`, { method: "DELETE" });
   toast("Usuario excluido.");
   await loadUsers();
+  await loadUserOptions();
 };
 
 function logout(callApi = true) {
@@ -424,6 +482,7 @@ function bindEvents() {
       localStorage.setItem("finance_token", state.token);
       showApp();
       await loadCategories();
+      await loadUserOptions();
       setView("dashboard");
     } catch (error) {
       $("#loginMsg").textContent = error.message;
@@ -442,6 +501,7 @@ function bindEvents() {
   on("#expenseCategory", "change", loadExpenses);
   on("#incomeStatus", "change", loadIncomes);
   on("#incomeCategory", "change", loadIncomes);
+  on("#filterUser", "change", refreshAll);
   on("#reportType", "change", loadReport);
   on("#exportReport", "click", exportReport);
   on("#userForm", "submit", saveUser);
@@ -472,6 +532,7 @@ async function boot() {
       state.user = data.user;
       showApp();
       await loadCategories();
+      await loadUserOptions();
       setView("dashboard");
     } catch {
       logout(false);

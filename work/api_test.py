@@ -31,6 +31,11 @@ def request(method, path, data=None, token=None):
         return raw
 
 
+def assert_true(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
 def main():
     shutil.rmtree(ROOT / "work" / "test-data", ignore_errors=True)
     server.init_db()
@@ -115,10 +120,43 @@ def main():
         admin_login = request("POST", "/api/login", {"username": "admin_criado", "password": "admin123"})
         admin_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=admin_login["token"])
         request("POST", f"/api/expenses/{expense['id']}/pay", {"payment_date": "2026-06-09"}, normal_login["token"])
+        normal_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
+        normal_incomes = request("GET", "/api/incomes?month=6&year=2026", token=normal_login["token"])
+        admin_expenses = request("GET", "/api/expenses?month=6&year=2026", token=admin_login["token"])
+        admin_incomes = request("GET", "/api/incomes?month=6&year=2026", token=admin_login["token"])
+        super_expenses = request("GET", "/api/expenses?month=6&year=2026", token=super_token)
+        filtered_super_expenses = request(
+            "GET",
+            f"/api/expenses?month=6&year=2026&user_id={public_user['id']}",
+            token=super_token,
+        )
         dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])
         super_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=super_token)
+        filtered_super_dashboard = request(
+            "GET",
+            f"/api/dashboard?month=6&year=2026&user_id={public_user['id']}",
+            token=super_token,
+        )
         report = request("GET", "/api/report?month=6&year=2026", token=normal_login["token"])
+        filtered_super_report = request(
+            "GET",
+            f"/api/report?month=6&year=2026&user_id={public_user['id']}",
+            token=super_token,
+        )
         csv_bytes = request("GET", "/api/report/export?month=6&year=2026", token=normal_login["token"])
+
+        assert_true(super_login["user"]["profile"] == "superadmin", "login superadmin falhou")
+        assert_true(normal_login["user"]["profile"] == "usuario", "cadastro publico nao criou usuario comum")
+        assert_true(duplicate_blocked, "usuario duplicado nao foi bloqueado")
+        assert_true(blocked, "usuario comum acessou menu/rota de usuarios")
+        assert_true(any(item["id"] == expense["id"] for item in normal_expenses["expenses"]), "conta cadastrada nao apareceu para o usuario")
+        assert_true(any(item["id"] == income["id"] for item in normal_incomes["incomes"]), "receita cadastrada nao apareceu para o usuario")
+        assert_true(not admin_expenses["expenses"], "admin sem lancamentos viu contas de outro usuario")
+        assert_true(not admin_incomes["incomes"], "admin sem lancamentos viu receitas de outro usuario")
+        assert_true(any(item["id"] == expense["id"] for item in super_expenses["expenses"]), "superadmin nao viu todos os registros")
+        assert_true(any(item["id"] == expense["id"] for item in filtered_super_expenses["expenses"]), "filtro por usuario do superadmin nao retornou a conta")
+        assert_true(filtered_super_dashboard["cards"]["total_income"] == dashboard["cards"]["total_income"], "dashboard filtrado do superadmin divergiu do usuario")
+        assert_true(filtered_super_report["summary"]["final_balance"] == report["summary"]["final_balance"], "relatorio filtrado do superadmin divergiu do usuario")
         print(
             json.dumps(
                 {
@@ -130,6 +168,11 @@ def main():
                     "normal_login": normal_login["user"]["username"],
                     "normal_profile": normal_login["user"]["profile"],
                     "normal_user_blocked_from_users": blocked,
+                    "normal_expenses_count": len(normal_expenses["expenses"]),
+                    "normal_incomes_count": len(normal_incomes["incomes"]),
+                    "admin_expenses_count": len(admin_expenses["expenses"]),
+                    "super_expenses_count": len(super_expenses["expenses"]),
+                    "filtered_super_expenses_count": len(filtered_super_expenses["expenses"]),
                     "admin_created_sees_own_total": admin_dashboard["cards"]["total_income"],
                     "superadmin_sees_all_income": super_dashboard["cards"]["total_income"],
                     "expense_id": expense["id"],

@@ -256,7 +256,16 @@ def filters_to_sql(params, kind):
     return where, values
 
 
-def apply_user_scope(where, values, user):
+def apply_user_scope(where, values, user, params=None):
+    params = params or {}
+    selected_user_id = params.get("user_id")
+    if user["profile"] == "superadmin" and selected_user_id:
+        if where:
+            where += " AND user_id = ?"
+        else:
+            where = " WHERE user_id = ?"
+        values.append(selected_user_id)
+        return where, values
     if user["profile"] == "superadmin":
         return where, values
     if where:
@@ -267,7 +276,11 @@ def apply_user_scope(where, values, user):
     return where, values
 
 
-def owned_update_suffix(user):
+def owned_update_suffix(user, params=None):
+    params = params or {}
+    selected_user_id = params.get("user_id")
+    if user["profile"] == "superadmin" and selected_user_id:
+        return " AND user_id = ?", [selected_user_id]
     if user["profile"] == "superadmin":
         return "", []
     return " AND user_id = ?", [user["id"]]
@@ -662,7 +675,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         selected = dashboard_period(params)
         start, end = month_range(selected["year"], selected["month"])
         today = today_iso()
-        scope_sql, scope_values = owned_update_suffix(user)
+        scope_sql, scope_values = owned_update_suffix(user, params)
         with connect() as conn:
             expenses = conn.execute(
                 f"SELECT * FROM expenses WHERE due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date",
@@ -708,7 +721,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return
         normalize_overdue_expenses()
         where, values = filters_to_sql(params, "expenses")
-        where, values = apply_user_scope(where, values, user)
+        where, values = apply_user_scope(where, values, user, params)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM expenses{where} ORDER BY due_date DESC, id DESC", values).fetchall()
         self.send_json({"expenses": [row_to_dict(row) for row in rows]})
@@ -718,7 +731,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         if user is None:
             return
         where, values = filters_to_sql(params, "incomes")
-        where, values = apply_user_scope(where, values, user)
+        where, values = apply_user_scope(where, values, user, params)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM incomes{where} ORDER BY receipt_date DESC, id DESC", values).fetchall()
         self.send_json({"incomes": [row_to_dict(row) for row in rows]})
@@ -922,7 +935,7 @@ def build_report(params, user):
     selected = dashboard_period(params)
     start, end = month_range(selected["year"], selected["month"])
     movement_type = params.get("type", "")
-    scope_sql, scope_values = owned_update_suffix(user)
+    scope_sql, scope_values = owned_update_suffix(user, params)
     with connect() as conn:
         expenses = [] if movement_type == "Receita" else [row_to_dict(row) for row in conn.execute(
             f"SELECT * FROM expenses WHERE due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date, id",
