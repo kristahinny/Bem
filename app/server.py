@@ -21,6 +21,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "financeiro.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USE_POSTGRES = bool(DATABASE_URL)
 SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "12"))
 SECRET_KEY = os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao")
 SUPERADMIN_USERNAME = "krisrosa"
@@ -62,7 +64,71 @@ IMPORT_SHEETS = {
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+class PostgresCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.lastrowid = None
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+    @property
+    def rowcount(self):
+        return self.cursor.rowcount
+
+
+class PostgresConnection:
+    def __init__(self):
+        try:
+            import psycopg2
+            import psycopg2.extras
+        except ImportError as exc:
+            raise RuntimeError("Instale psycopg2-binary ou use a imagem Docker atualizada para conectar ao PostgreSQL") from exc
+        self.conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        if exc_type:
+            self.conn.rollback()
+        else:
+            self.conn.commit()
+        self.conn.close()
+
+    def execute(self, sql, params=()):
+        sql = sql.replace("?", "%s")
+        returning = False
+        upper_sql = sql.upper()
+        table_match = re.match(r"\s*INSERT\s+INTO\s+([a-z_]+)", sql, re.IGNORECASE)
+        id_tables = {"users", "categories", "expenses", "incomes", "goals"}
+        insert_table = table_match.group(1).lower() if table_match else ""
+        if insert_table in id_tables and " RETURNING " not in upper_sql and " ON CONFLICT " not in upper_sql:
+            sql = sql.rstrip().rstrip(";") + " RETURNING id"
+            returning = True
+        cursor = self.conn.cursor()
+        cursor.execute(sql, params)
+        wrapped = PostgresCursor(cursor)
+        if returning:
+            try:
+                row = cursor.fetchone()
+                wrapped.lastrowid = row["id"] if row and "id" in row else None
+            except Exception:
+                wrapped.lastrowid = None
+        return wrapped
+
+    def executescript(self, script):
+        cursor = self.conn.cursor()
+        cursor.execute(script)
+        return PostgresCursor(cursor)
+
+
 def connect():
+    if USE_POSTGRES:
+        return PostgresConnection()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -79,90 +145,186 @@ def verify_password(password, salt, password_hash):
     return hmac.compare_digest(candidate, password_hash)
 
 
+def integrity_errors():
+    errors = [sqlite3.IntegrityError]
+    if USE_POSTGRES:
+        try:
+            import psycopg2
+            errors.append(psycopg2.IntegrityError)
+        except ImportError:
+            pass
+    return tuple(errors)
+
+
+def insert_default_category(conn, category):
+    if USE_POSTGRES:
+        conn.execute("INSERT INTO categories (name, active) VALUES (?, 1) ON CONFLICT (name) DO NOTHING", (category,))
+    else:
+        conn.execute("INSERT OR IGNORE INTO categories (name, active) VALUES (?, 1)", (category,))
+
+
+SQLITE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    full_name TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    profile TEXT NOT NULL DEFAULT 'usuario',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount REAL NOT NULL,
+    due_date TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('Pendente', 'Pago', 'Vencido')),
+    payment_method TEXT,
+    notes TEXT,
+    payment_date TEXT,
+    user_id INTEGER,
+    installment_group TEXT,
+    installment_number INTEGER,
+    installment_total INTEGER,
+    cancelled INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS incomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount REAL NOT NULL,
+    receipt_date TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('Recebido', 'Pendente')),
+    notes TEXT,
+    user_id INTEGER,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    name TEXT NOT NULL,
+    description TEXT,
+    target_amount REAL NOT NULL,
+    current_amount REAL NOT NULL DEFAULT 0,
+    target_date TEXT,
+    status TEXT NOT NULL DEFAULT 'Ativa',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+"""
+
+
+POSTGRES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    full_name TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    profile TEXT NOT NULL DEFAULT 'usuario',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS expenses (
+    id SERIAL PRIMARY KEY,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount DOUBLE PRECISION NOT NULL,
+    due_date TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('Pendente', 'Pago', 'Vencido')),
+    payment_method TEXT,
+    notes TEXT,
+    payment_date TEXT,
+    user_id INTEGER REFERENCES users(id),
+    installment_group TEXT,
+    installment_number INTEGER,
+    installment_total INTEGER,
+    cancelled INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS incomes (
+    id SERIAL PRIMARY KEY,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount DOUBLE PRECISION NOT NULL,
+    receipt_date TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('Recebido', 'Pendente')),
+    notes TEXT,
+    user_id INTEGER REFERENCES users(id),
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    name TEXT NOT NULL,
+    description TEXT,
+    target_amount DOUBLE PRECISION NOT NULL,
+    current_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+    target_date TEXT,
+    status TEXT NOT NULL DEFAULT 'Ativa',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+
 def init_db():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                full_name TEXT NOT NULL DEFAULT '',
-                password_hash TEXT NOT NULL,
-                salt TEXT NOT NULL,
-                profile TEXT NOT NULL DEFAULT 'usuario',
-                active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS sessions (
-                token TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                expires_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS categories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                active INTEGER NOT NULL DEFAULT 1
-            );
-
-            CREATE TABLE IF NOT EXISTS expenses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                description TEXT NOT NULL,
-                category TEXT NOT NULL,
-                amount REAL NOT NULL,
-                due_date TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('Pendente', 'Pago', 'Vencido')),
-                payment_method TEXT,
-                notes TEXT,
-                payment_date TEXT,
-                user_id INTEGER,
-                installment_group TEXT,
-                installment_number INTEGER,
-                installment_total INTEGER,
-                cancelled INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS incomes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                description TEXT NOT NULL,
-                category TEXT NOT NULL,
-                amount REAL NOT NULL,
-                receipt_date TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('Recebido', 'Pendente')),
-                notes TEXT,
-                user_id INTEGER,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS goals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                name TEXT NOT NULL,
-                description TEXT,
-                target_amount REAL NOT NULL,
-                current_amount REAL NOT NULL DEFAULT 0,
-                target_date TEXT,
-                status TEXT NOT NULL DEFAULT 'Ativa',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            );
-            """
-        )
+        conn.executescript(POSTGRES_SCHEMA if USE_POSTGRES else SQLITE_SCHEMA)
         ensure_user_columns(conn)
         ensure_category_columns(conn)
         ensure_financial_columns(conn)
         ensure_goal_table(conn)
         for category in DEFAULT_CATEGORIES:
-            conn.execute("INSERT OR IGNORE INTO categories (name, active) VALUES (?, 1)", (category,))
+            insert_default_category(conn, category)
 
         user = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()
         if not user:
@@ -192,8 +354,23 @@ def init_db():
         conn.execute("UPDATE incomes SET user_id = ? WHERE user_id IS NULL", (admin_id,))
 
 
+def table_columns(conn, table):
+    if USE_POSTGRES:
+        rows = conn.execute(
+            """
+            SELECT column_name AS name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = ?
+            """,
+            (table,),
+        ).fetchall()
+    else:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row["name"] for row in rows}
+
+
 def ensure_user_columns(conn):
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    columns = table_columns(conn, "users")
     if "full_name" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
     if "profile" not in columns:
@@ -203,14 +380,14 @@ def ensure_user_columns(conn):
 
 
 def ensure_category_columns(conn):
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(categories)").fetchall()}
+    columns = table_columns(conn, "categories")
     if "active" not in columns:
         conn.execute("ALTER TABLE categories ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
 
 
 def ensure_financial_columns(conn):
-    expense_columns = {row["name"] for row in conn.execute("PRAGMA table_info(expenses)").fetchall()}
-    income_columns = {row["name"] for row in conn.execute("PRAGMA table_info(incomes)").fetchall()}
+    expense_columns = table_columns(conn, "expenses")
+    income_columns = table_columns(conn, "incomes")
     if "user_id" not in expense_columns:
         conn.execute("ALTER TABLE expenses ADD COLUMN user_id INTEGER")
     if "user_id" not in income_columns:
@@ -233,6 +410,22 @@ def ensure_goal_table(conn):
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS goals (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
+            name TEXT NOT NULL,
+            description TEXT,
+            target_amount DOUBLE PRECISION NOT NULL,
+            current_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+            target_date TEXT,
+            status TEXT NOT NULL DEFAULT 'Em andamento',
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+        )
+        """
+        if USE_POSTGRES
+        else """
+        CREATE TABLE IF NOT EXISTS goals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             name TEXT NOT NULL,
@@ -248,7 +441,7 @@ def ensure_goal_table(conn):
         )
         """
     )
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(goals)").fetchall()}
+    columns = table_columns(conn, "goals")
     for column, definition in {
         "user_id": "INTEGER",
         "description": "TEXT",
@@ -904,7 +1097,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     """,
                     (payload["username"], payload["full_name"], password_hash, salt, now()),
                 )
-        except sqlite3.IntegrityError:
+        except integrity_errors():
             return self.send_error_json("Usuario ja existe")
         self.send_json({"id": cur.lastrowid, "message": "Conta criada com sucesso. Faça login."}, HTTPStatus.CREATED)
 
@@ -945,7 +1138,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                         now(),
                     ),
                 )
-        except sqlite3.IntegrityError:
+        except integrity_errors():
             return self.send_error_json("Usuario ja existe")
         self.send_json({"id": cur.lastrowid}, HTTPStatus.CREATED)
 
@@ -966,7 +1159,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     "UPDATE users SET username = ?, full_name = ?, profile = ?, active = ? WHERE id = ?",
                     (payload["username"], payload["full_name"], profile, active, user_id),
                 )
-            except sqlite3.IntegrityError:
+            except integrity_errors():
                 return self.send_error_json("Usuario ja existe")
         self.send_json({"ok": True})
 
@@ -1060,7 +1253,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     conn.execute("UPDATE categories SET active = 1 WHERE id = ?", (existing["id"],))
                     return self.send_json({"id": existing["id"], "reactivated": True})
                 cur = conn.execute("INSERT INTO categories (name, active) VALUES (?, 1)", (name,))
-        except sqlite3.IntegrityError:
+        except integrity_errors():
             return self.send_error_json("Categoria ja existe")
         self.send_json({"id": cur.lastrowid}, HTTPStatus.CREATED)
 
@@ -1077,7 +1270,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     "UPDATE categories SET name = ?, active = ? WHERE id = ?",
                     (name, active, category_id),
                 )
-        except sqlite3.IntegrityError:
+        except integrity_errors():
             return self.send_error_json("Categoria ja existe")
         if cur.rowcount == 0:
             return self.send_error_json("Categoria nao encontrada", HTTPStatus.NOT_FOUND)

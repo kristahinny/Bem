@@ -5,13 +5,9 @@ services:
     plan: starter
     autoDeploy: false
     envVars:
-      - key: DATA_DIR
-        value: /app/data
+      - key: DATABASE_URL
+        sync: false
       - key: SUPERADMIN_PASSWORD
         sync: false
       - key: SECRET_KEY
         generateValue: true
-    disk:
-      name: financeiro-data
-      mountPath: /app/data
-      sizeGB: 1

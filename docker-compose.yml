@@ -6,11 +6,26 @@ services:
       - "8000:8000"
     environment:
       DATA_DIR: /app/data
+      DATABASE_URL: ${DATABASE_URL:-postgresql://financeiro:financeiro@postgres:5432/financeiro}
       SECRET_KEY: altere-esta-chave
       SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-}
     volumes:
       - financeiro_data:/app/data
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: financeiro-postgres
+    environment:
+      POSTGRES_DB: financeiro
+      POSTGRES_USER: financeiro
+      POSTGRES_PASSWORD: financeiro
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
 volumes:
   financeiro_data:
+  postgres_data:

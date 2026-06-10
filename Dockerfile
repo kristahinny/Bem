@@ -9,8 +9,10 @@ WORKDIR /app
 
 COPY app ./app
 COPY static ./static
+COPY requirements.txt ./requirements.txt
 
 RUN mkdir -p /app/data
+RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8000
 
