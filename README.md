@@ -21,23 +21,9 @@ Depois acesse:
 http://localhost:8000
 ```
 
-Login inicial:
+Credenciais administrativas devem ser configuradas pelo proprietario do sistema.
 
-```text
-usuario: admin
-senha: admin123
-```
-
-SuperAdmin inicial:
-
-```text
-usuario: krisrosa
-senha: admin123
-```
-
-No Docker, voce pode trocar a senha inicial do SuperAdmin antes da primeira execucao usando a variavel `SUPERADMIN_PASSWORD`.
-
-Troque a senha no menu **Senha** apos o primeiro acesso.
+Troque credenciais administrativas iniciais antes de liberar o sistema para outros usuarios.
 
 ## Persistencia dos dados
 
@@ -56,7 +42,7 @@ Abra `http://localhost:8000`.
 
 ## Funcionalidades
 
-- Login simples com usuario administrador inicial
+- Login simples com usuarios comuns e area administrativa restrita
 - Alteracao de senha
 - Dashboard mensal com receitas, despesas, saldos, vencidas e proximas contas
 - Cadastro, edicao, exclusao e pagamento de contas

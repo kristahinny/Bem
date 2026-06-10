@@ -19,7 +19,7 @@ DB_PATH = DATA_DIR / "financeiro.db"
 SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "12"))
 SECRET_KEY = os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao")
 SUPERADMIN_USERNAME = "krisrosa"
-SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD", "admin123")
+SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD") or "admin123"
 
 DEFAULT_CATEGORIES = [
     "Mercado",

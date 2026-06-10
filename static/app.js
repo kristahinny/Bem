@@ -210,8 +210,8 @@ async function loadUsers() {
       <td class="actions">
         <button class="edit" onclick="editUser(${item.id})">Editar</button>
         <button class="edit" onclick="changeUserPassword(${item.id})">Senha</button>
-        ${item.username !== "krisrosa" ? `<button class="success" onclick="toggleUser(${item.id})">${item.active ? "Desativar" : "Ativar"}</button>` : ""}
-        ${item.username !== "krisrosa" ? `<button class="danger" onclick="deleteUser(${item.id})">Excluir</button>` : ""}
+        ${item.profile !== "superadmin" ? `<button class="success" onclick="toggleUser(${item.id})">${item.active ? "Desativar" : "Ativar"}</button>` : ""}
+        ${item.profile !== "superadmin" ? `<button class="danger" onclick="deleteUser(${item.id})">Excluir</button>` : ""}
       </td>
     </tr>
   `).join("") || `<tr><td colspan="6">Nenhum usuario cadastrado.</td></tr>`;

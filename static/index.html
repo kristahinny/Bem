@@ -14,8 +14,8 @@
         <h1>Financeiro</h1>
       </div>
       <form id="loginForm" class="form-stack">
-        <label>Usuario<input name="username" value="admin" autocomplete="username" required></label>
-        <label>Senha<input name="password" type="password" value="admin123" autocomplete="current-password" required></label>
+        <label>Usuario<input name="username" autocomplete="off" required></label>
+        <label>Senha<input name="password" type="password" autocomplete="off" required></label>
         <button class="primary" type="submit">Entrar</button>
         <button id="showRegisterBtn" class="ghost" type="button">Criar conta</button>
         <p id="loginMsg" class="message"></p>
@@ -164,7 +164,7 @@
             <input type="hidden" name="id">
             <label>Nome<input name="full_name" autocomplete="off" required></label>
             <label>Usuario<input name="username" autocomplete="off" required></label>
-            <label>Perfil<select name="profile"><option value="usuario">usuario</option><option value="admin">admin</option></select></label>
+            <label>Perfil<select name="profile"><option>usuario</option><option>admin</option></select></label>
             <label>Status<select name="active"><option value="true">Ativo</option><option value="false">Inativo</option></select></label>
             <label>Senha<input name="password" type="password" minlength="6" autocomplete="new-password"></label>
             <button class="primary" type="submit">Salvar usuario</button>
