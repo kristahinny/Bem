@@ -10,6 +10,10 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+const on = (selector, event, handler) => {
+  const element = $(selector);
+  if (element) element.addEventListener(event, handler);
+};
 const money = (value) => Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const fmtDate = (value) => value ? value.split("-").reverse().join("/") : "";
 
@@ -82,17 +86,17 @@ function showLogin() {
 }
 
 function showRegisterForm() {
-  $("#loginForm").classList.add("hidden");
-  $("#registerForm").classList.remove("hidden");
-  $("#loginMsg").textContent = "";
-  $("#registerMsg").textContent = "";
+  $("#loginForm")?.classList.add("hidden");
+  $("#registerForm")?.classList.remove("hidden");
+  if ($("#loginMsg")) $("#loginMsg").textContent = "";
+  if ($("#registerMsg")) $("#registerMsg").textContent = "";
 }
 
 function showLoginForm(message = "") {
-  $("#registerForm").classList.add("hidden");
-  $("#loginForm").classList.remove("hidden");
-  $("#registerMsg").textContent = "";
-  $("#loginMsg").textContent = message;
+  $("#registerForm")?.classList.add("hidden");
+  $("#loginForm")?.classList.remove("hidden");
+  if ($("#registerMsg")) $("#registerMsg").textContent = "";
+  if ($("#loginMsg")) $("#loginMsg").textContent = message;
 }
 
 function setView(view) {
@@ -241,12 +245,14 @@ function formData(form) {
 }
 
 function fillForm(form, item) {
+  if (!form) return;
   Object.entries(item).forEach(([key, value]) => {
     if (form.elements[key]) form.elements[key].value = value ?? "";
   });
 }
 
 function clearForm(form) {
+  if (!form || typeof form.reset !== "function") return;
   form.reset();
   if (form.elements.id) form.elements.id.value = "";
 }
@@ -291,6 +297,7 @@ async function saveUser(event) {
 async function registerAccount(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  if (!form) return;
   const data = formData(form);
   $("#registerMsg").textContent = "";
   if (!data.full_name.trim()) {
@@ -311,7 +318,9 @@ async function registerAccount(event) {
   }
   try {
     await api("/api/register", { method: "POST", body: JSON.stringify(data) });
-    form.reset();
+    if (form && typeof form.reset === "function") {
+      form.reset();
+    }
     showLoginForm("Conta criada com sucesso. Faça login.");
   } catch (error) {
     $("#registerMsg").textContent = error.message;
@@ -405,7 +414,7 @@ async function exportReport() {
 }
 
 function bindEvents() {
-  $("#loginForm").addEventListener("submit", async (event) => {
+  on("#loginForm", "submit", async (event) => {
     event.preventDefault();
     $("#loginMsg").textContent = "";
     try {
@@ -420,29 +429,33 @@ function bindEvents() {
       $("#loginMsg").textContent = error.message;
     }
   });
-  $("#showRegisterBtn").addEventListener("click", showRegisterForm);
-  $("#showLoginBtn").addEventListener("click", () => showLoginForm());
-  $("#registerForm").addEventListener("submit", registerAccount);
+  on("#showRegisterBtn", "click", showRegisterForm);
+  on("#showLoginBtn", "click", () => showLoginForm());
+  on("#registerForm", "submit", registerAccount);
   $$(".nav-btn").forEach((btn) => btn.addEventListener("click", () => setView(btn.dataset.view)));
-  $("#logoutBtn").addEventListener("click", () => logout(true));
-  $("#expenseForm").addEventListener("submit", saveExpense);
-  $("#incomeForm").addEventListener("submit", saveIncome);
-  $("#clearExpenseForm").addEventListener("click", () => clearForm($("#expenseForm")));
-  $("#clearIncomeForm").addEventListener("click", () => clearForm($("#incomeForm")));
-  $("#expenseStatus").addEventListener("change", loadExpenses);
-  $("#expenseCategory").addEventListener("change", loadExpenses);
-  $("#incomeStatus").addEventListener("change", loadIncomes);
-  $("#incomeCategory").addEventListener("change", loadIncomes);
-  $("#reportType").addEventListener("change", loadReport);
-  $("#exportReport").addEventListener("click", exportReport);
-  $("#userForm").addEventListener("submit", saveUser);
-  $("#clearUserForm").addEventListener("click", () => clearForm($("#userForm")));
-  $("#passwordForm").addEventListener("submit", async (event) => {
+  on("#logoutBtn", "click", () => logout(true));
+  on("#expenseForm", "submit", saveExpense);
+  on("#incomeForm", "submit", saveIncome);
+  on("#clearExpenseForm", "click", () => clearForm($("#expenseForm")));
+  on("#clearIncomeForm", "click", () => clearForm($("#incomeForm")));
+  on("#expenseStatus", "change", loadExpenses);
+  on("#expenseCategory", "change", loadExpenses);
+  on("#incomeStatus", "change", loadIncomes);
+  on("#incomeCategory", "change", loadIncomes);
+  on("#reportType", "change", loadReport);
+  on("#exportReport", "click", exportReport);
+  on("#userForm", "submit", saveUser);
+  on("#clearUserForm", "click", () => clearForm($("#userForm")));
+  on("#passwordForm", "submit", async (event) => {
     event.preventDefault();
+    const form = event.currentTarget;
+    if (!form) return;
     $("#passwordMsg").textContent = "";
     try {
-      await api("/api/change-password", { method: "POST", body: JSON.stringify(formData(event.currentTarget)) });
-      event.currentTarget.reset();
+      await api("/api/change-password", { method: "POST", body: JSON.stringify(formData(form)) });
+      if (form && typeof form.reset === "function") {
+        form.reset();
+      }
       $("#passwordMsg").textContent = "Senha alterada com sucesso.";
     } catch (error) {
       $("#passwordMsg").textContent = error.message;
