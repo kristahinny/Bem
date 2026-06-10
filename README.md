@@ -46,14 +46,20 @@ Abra `http://localhost:8000`.
 - Alteracao de senha
 - Dashboard mensal com receitas, despesas, saldos, vencidas e proximas contas
 - Cadastro, edicao, exclusao e pagamento de contas
+- Parcelamento automatico dentro do cadastro de despesas
 - Cadastro, edicao e exclusao de receitas
+- Metas financeiras com progresso, adicao e retirada de valores
+- Graficos simples e fluxo de caixa futuro de 12 meses
+- Importacao por modelo CSV compativel com Excel, com previa e validacao
 - Filtros por mes, ano, status e categoria
 - Relatorio mensal com exportacao CSV
 - Importacao Excel por modelo oficial `.xlsx` com abas DESPESAS, RECEITAS, METAS e PARCELADAS
 - Categorias padrao criadas automaticamente
+- SuperAdmin pode gerenciar usuarios e categorias
 
 ## Observacoes para uso real
 
 - Altere a senha padrao imediatamente.
 - Em rede interna ou uso empresarial, coloque a aplicacao atras de proxy com HTTPS.
 - Faca backup do volume `financeiro_data` periodicamente.
+- No Render, use o `render.yaml` e mantenha um disco persistente montado em `/app/data` para preservar o SQLite.

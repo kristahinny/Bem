@@ -136,6 +136,7 @@ h3 { font-size: 18px; }
 .stat.balance { border-top: 4px solid var(--brand); }
 .stat.balance-real { border-top: 4px solid #5b6b7b; }
 .stat.overdue { border-top: 4px solid var(--overdue); }
+.stat.pending { border-top: 4px solid var(--pending); }
 
 .panel {
   background: var(--panel);
@@ -230,6 +231,57 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
 }
 .report-summary span { color: var(--muted); font-size: 13px; font-weight: 800; }
 .report-summary strong { font-size: 22px; }
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.chart-grid h4 {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+  text-transform: uppercase;
+}
+.bar-chart {
+  height: 150px;
+  display: flex;
+  align-items: end;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #f7f9fb;
+}
+.bar {
+  flex: 1;
+  min-width: 10px;
+  background: var(--brand);
+  border-radius: 4px 4px 0 0;
+  position: relative;
+}
+.bar.income { background: var(--income); }
+.bar.expense { background: var(--expense); }
+.bar.balance { background: #5b6b7b; }
+.bar.goal { background: var(--pending); }
+.goal-list { display: grid; gap: 12px; }
+.goal-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+.progress {
+  height: 10px;
+  background: #eef2f6;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress span {
+  display: block;
+  height: 100%;
+  background: var(--income);
+}
 .toast {
   position: fixed;
   right: 20px;
@@ -262,6 +314,7 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
   .topbar { align-items: flex-start; flex-direction: column; }
   .period-picker { width: 100%; }
   .cards, .two-columns, .report-summary { grid-template-columns: 1fr; }
+  .chart-grid { grid-template-columns: 1fr; }
   .grid-form { grid-template-columns: 1fr; }
   .wide { grid-column: auto; }
   .filters { flex-direction: column; max-width: none; }
