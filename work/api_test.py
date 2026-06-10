@@ -39,20 +39,52 @@ def main():
     thread.start()
     time.sleep(0.2)
     try:
-        login = request("POST", "/api/login", {"username": "admin", "password": "admin123"})
-        token = login["token"]
-        created_user = request(
+        super_login = request("POST", "/api/login", {"username": "krisrosa", "password": "admin123"})
+        super_token = super_login["token"]
+        public_user = request(
             "POST",
-            "/api/users",
-            {"username": "teste_usuario", "password": "usuario123", "profile": "usuario", "active": "true"},
-            token,
+            "/api/register",
+            {
+                "full_name": "Usuario Publico",
+                "username": "usuario_publico",
+                "password": "usuario123",
+                "confirm_password": "usuario123",
+                "profile": "admin",
+            },
         )
-        normal_login = request("POST", "/api/login", {"username": "teste_usuario", "password": "usuario123"})
+        duplicate_blocked = False
+        try:
+            request(
+                "POST",
+                "/api/register",
+                {
+                    "full_name": "Usuario Publico",
+                    "username": "usuario_publico",
+                    "password": "usuario123",
+                    "confirm_password": "usuario123",
+                },
+            )
+        except urllib.error.HTTPError as exc:
+            duplicate_blocked = exc.code == 400
+
+        normal_login = request("POST", "/api/login", {"username": "usuario_publico", "password": "usuario123"})
         blocked = False
         try:
             request("GET", "/api/users", token=normal_login["token"])
         except urllib.error.HTTPError as exc:
             blocked = exc.code == 403
+        created_admin = request(
+            "POST",
+            "/api/users",
+            {
+                "full_name": "Admin Criado",
+                "username": "admin_criado",
+                "password": "admin123",
+                "profile": "admin",
+                "active": "true",
+            },
+            super_token,
+        )
         expense = request(
             "POST",
             "/api/expenses",
@@ -65,7 +97,7 @@ def main():
                 "payment_method": "Pix",
                 "notes": "Teste automatico",
             },
-            token,
+            normal_login["token"],
         )
         income = request(
             "POST",
@@ -78,20 +110,28 @@ def main():
                 "status": "Recebido",
                 "notes": "Teste automatico",
             },
-            token,
+            normal_login["token"],
         )
-        request("POST", f"/api/expenses/{expense['id']}/pay", {"payment_date": "2026-06-09"}, token)
-        dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=token)
-        report = request("GET", "/api/report?month=6&year=2026", token=token)
-        csv_bytes = request("GET", "/api/report/export?month=6&year=2026", token=token)
+        admin_login = request("POST", "/api/login", {"username": "admin_criado", "password": "admin123"})
+        admin_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=admin_login["token"])
+        request("POST", f"/api/expenses/{expense['id']}/pay", {"payment_date": "2026-06-09"}, normal_login["token"])
+        dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])
+        super_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=super_token)
+        report = request("GET", "/api/report?month=6&year=2026", token=normal_login["token"])
+        csv_bytes = request("GET", "/api/report/export?month=6&year=2026", token=normal_login["token"])
         print(
             json.dumps(
                 {
-                    "login": login["user"]["username"],
-                    "admin_profile": login["user"]["profile"],
-                    "created_user_id": created_user["id"],
+                    "super_login": super_login["user"]["username"],
+                    "super_profile": super_login["user"]["profile"],
+                    "public_user_id": public_user["id"],
+                    "duplicate_blocked": duplicate_blocked,
+                    "created_admin_id": created_admin["id"],
                     "normal_login": normal_login["user"]["username"],
+                    "normal_profile": normal_login["user"]["profile"],
                     "normal_user_blocked_from_users": blocked,
+                    "admin_created_sees_own_total": admin_dashboard["cards"]["total_income"],
+                    "superadmin_sees_all_income": super_dashboard["cards"]["total_income"],
                     "expense_id": expense["id"],
                     "income_id": income["id"],
                     "total_paid": dashboard["cards"]["total_paid"],

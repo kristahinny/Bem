@@ -72,8 +72,8 @@ function query(extra = {}) {
 function showApp() {
   $("#loginScreen").classList.add("hidden");
   $("#appShell").classList.remove("hidden");
-  const isAdmin = state.user?.profile === "admin";
-  $$(".admin-only").forEach((el) => el.classList.toggle("hidden", !isAdmin));
+  const isSuperAdmin = state.user?.profile === "superadmin";
+  $$(".admin-only").forEach((el) => el.classList.toggle("hidden", !isSuperAdmin));
 }
 
 function showLogin() {
@@ -81,9 +81,23 @@ function showLogin() {
   $("#appShell").classList.add("hidden");
 }
 
+function showRegisterForm() {
+  $("#loginForm").classList.add("hidden");
+  $("#registerForm").classList.remove("hidden");
+  $("#loginMsg").textContent = "";
+  $("#registerMsg").textContent = "";
+}
+
+function showLoginForm(message = "") {
+  $("#registerForm").classList.add("hidden");
+  $("#loginForm").classList.remove("hidden");
+  $("#registerMsg").textContent = "";
+  $("#loginMsg").textContent = message;
+}
+
 function setView(view) {
-  if (view === "users" && state.user?.profile !== "admin") {
-    toast("Acesso permitido somente para administradores.");
+  if (view === "users" && state.user?.profile !== "superadmin") {
+    toast("Acesso permitido somente para o SuperAdmin.");
     view = "dashboard";
   }
   state.view = view;
@@ -188,6 +202,7 @@ async function loadUsers() {
   $("#userCount").textContent = data.users.length;
   $("#usersTable").innerHTML = data.users.map((item) => `
     <tr>
+      <td>${escapeHtml(item.full_name)}</td>
       <td>${escapeHtml(item.username)}</td>
       <td><span class="pill ${item.profile}">${item.profile}</span></td>
       <td><span class="pill ${item.active ? "Recebido" : "Vencido"}">${item.active ? "Ativo" : "Inativo"}</span></td>
@@ -195,11 +210,11 @@ async function loadUsers() {
       <td class="actions">
         <button class="edit" onclick="editUser(${item.id})">Editar</button>
         <button class="edit" onclick="changeUserPassword(${item.id})">Senha</button>
-        ${item.username !== "admin" ? `<button class="success" onclick="toggleUser(${item.id})">${item.active ? "Desativar" : "Ativar"}</button>` : ""}
-        ${item.username !== "admin" ? `<button class="danger" onclick="deleteUser(${item.id})">Excluir</button>` : ""}
+        ${item.username !== "krisrosa" ? `<button class="success" onclick="toggleUser(${item.id})">${item.active ? "Desativar" : "Ativar"}</button>` : ""}
+        ${item.username !== "krisrosa" ? `<button class="danger" onclick="deleteUser(${item.id})">Excluir</button>` : ""}
       </td>
     </tr>
-  `).join("") || `<tr><td colspan="5">Nenhum usuario cadastrado.</td></tr>`;
+  `).join("") || `<tr><td colspan="6">Nenhum usuario cadastrado.</td></tr>`;
 }
 
 function reportRows(items, dateField) {
@@ -271,6 +286,36 @@ async function saveUser(event) {
   clearForm(form);
   toast("Usuario salvo.");
   await loadUsers();
+}
+
+async function registerAccount(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = formData(form);
+  $("#registerMsg").textContent = "";
+  if (!data.full_name.trim()) {
+    $("#registerMsg").textContent = "Nome obrigatorio.";
+    return;
+  }
+  if (!data.username.trim()) {
+    $("#registerMsg").textContent = "Usuario obrigatorio.";
+    return;
+  }
+  if (data.password.length < 6) {
+    $("#registerMsg").textContent = "A senha deve ter pelo menos 6 caracteres.";
+    return;
+  }
+  if (data.password !== data.confirm_password) {
+    $("#registerMsg").textContent = "Confirmacao de senha diferente da senha.";
+    return;
+  }
+  try {
+    await api("/api/register", { method: "POST", body: JSON.stringify(data) });
+    form.reset();
+    showLoginForm("Conta criada com sucesso. Faça login.");
+  } catch (error) {
+    $("#registerMsg").textContent = error.message;
+  }
 }
 
 window.editExpense = (id) => {
@@ -375,6 +420,9 @@ function bindEvents() {
       $("#loginMsg").textContent = error.message;
     }
   });
+  $("#showRegisterBtn").addEventListener("click", showRegisterForm);
+  $("#showLoginBtn").addEventListener("click", () => showLoginForm());
+  $("#registerForm").addEventListener("submit", registerAccount);
   $$(".nav-btn").forEach((btn) => btn.addEventListener("click", () => setView(btn.dataset.view)));
   $("#logoutBtn").addEventListener("click", () => logout(true));
   $("#expenseForm").addEventListener("submit", saveExpense);

@@ -28,6 +28,15 @@ usuario: admin
 senha: admin123
 ```
 
+SuperAdmin inicial:
+
+```text
+usuario: krisrosa
+senha: admin123
+```
+
+No Docker, voce pode trocar a senha inicial do SuperAdmin antes da primeira execucao usando a variavel `SUPERADMIN_PASSWORD`.
+
 Troque a senha no menu **Senha** apos o primeiro acesso.
 
 ## Persistencia dos dados

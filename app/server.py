@@ -18,6 +18,8 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "financeiro.db"
 SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "12"))
 SECRET_KEY = os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao")
+SUPERADMIN_USERNAME = "krisrosa"
+SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD", "admin123")
 
 DEFAULT_CATEGORIES = [
     "Mercado",
@@ -58,6 +60,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
+                full_name TEXT NOT NULL DEFAULT '',
                 password_hash TEXT NOT NULL,
                 salt TEXT NOT NULL,
                 profile TEXT NOT NULL DEFAULT 'usuario',
@@ -87,8 +90,10 @@ def init_db():
                 payment_method TEXT,
                 notes TEXT,
                 payment_date TEXT,
+                user_id INTEGER,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
             );
 
             CREATE TABLE IF NOT EXISTS incomes (
@@ -99,12 +104,15 @@ def init_db():
                 receipt_date TEXT NOT NULL,
                 status TEXT NOT NULL CHECK(status IN ('Recebido', 'Pendente')),
                 notes TEXT,
+                user_id INTEGER,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
             );
             """
         )
         ensure_user_columns(conn)
+        ensure_financial_columns(conn)
         for category in DEFAULT_CATEGORIES:
             conn.execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (category,))
 
@@ -112,19 +120,47 @@ def init_db():
         if not user:
             salt, password_hash = hash_password("admin123")
             conn.execute(
-                "INSERT INTO users (username, password_hash, salt, profile, active, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("admin", password_hash, salt, "admin", 1, now()),
+                "INSERT INTO users (username, full_name, password_hash, salt, profile, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("admin", "Administrador", password_hash, salt, "admin", 1, now()),
             )
         else:
             conn.execute("UPDATE users SET profile = 'admin', active = 1 WHERE username = 'admin'")
 
+        superadmin = conn.execute("SELECT id FROM users WHERE username = ?", (SUPERADMIN_USERNAME,)).fetchone()
+        if not superadmin:
+            salt, password_hash = hash_password(SUPERADMIN_PASSWORD)
+            conn.execute(
+                "INSERT INTO users (username, full_name, password_hash, salt, profile, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (SUPERADMIN_USERNAME, "Kris Rosa", password_hash, salt, "superadmin", 1, now()),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET profile = 'superadmin', active = 1 WHERE username = ?",
+                (SUPERADMIN_USERNAME,),
+            )
+
+        admin_id = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()["id"]
+        conn.execute("UPDATE expenses SET user_id = ? WHERE user_id IS NULL", (admin_id,))
+        conn.execute("UPDATE incomes SET user_id = ? WHERE user_id IS NULL", (admin_id,))
+
 
 def ensure_user_columns(conn):
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "full_name" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
     if "profile" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN profile TEXT NOT NULL DEFAULT 'usuario'")
     if "active" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+
+
+def ensure_financial_columns(conn):
+    expense_columns = {row["name"] for row in conn.execute("PRAGMA table_info(expenses)").fetchall()}
+    income_columns = {row["name"] for row in conn.execute("PRAGMA table_info(incomes)").fetchall()}
+    if "user_id" not in expense_columns:
+        conn.execute("ALTER TABLE expenses ADD COLUMN user_id INTEGER")
+    if "user_id" not in income_columns:
+        conn.execute("ALTER TABLE incomes ADD COLUMN user_id INTEGER")
 
 
 def now():
@@ -163,6 +199,7 @@ def public_user(row):
     return {
         "id": data["id"],
         "username": data["username"],
+        "full_name": data.get("full_name", ""),
         "profile": data.get("profile", "usuario"),
         "active": bool(data.get("active", 1)),
         "created_at": data.get("created_at"),
@@ -219,6 +256,23 @@ def filters_to_sql(params, kind):
     return where, values
 
 
+def apply_user_scope(where, values, user):
+    if user["profile"] == "superadmin":
+        return where, values
+    if where:
+        where += " AND user_id = ?"
+    else:
+        where = " WHERE user_id = ?"
+    values.append(user["id"])
+    return where, values
+
+
+def owned_update_suffix(user):
+    if user["profile"] == "superadmin":
+        return "", []
+    return " AND user_id = ?", [user["id"]]
+
+
 def normalize_overdue_expenses():
     with connect() as conn:
         conn.execute(
@@ -265,20 +319,26 @@ def income_payload(data, partial=False):
     }
 
 
-def user_payload(data, creating=False):
-    fields = ["username", "profile"]
+def user_payload(data, creating=False, public=False):
+    fields = ["full_name", "username"]
+    if not public:
+        fields.append("profile")
     if creating:
         fields.append("password")
     require_fields(data, fields)
+    full_name = str(data.get("full_name", "")).strip()
     username = str(data.get("username", "")).strip()
-    profile = str(data.get("profile", "usuario")).strip()
+    profile = "usuario" if public else str(data.get("profile", "usuario")).strip()
     if profile not in ("admin", "usuario"):
         raise ValueError("Perfil invalido")
     active = 1 if str(data.get("active", "true")).lower() in ("1", "true", "sim", "on") else 0
     password = str(data.get("password", ""))
     if creating and len(password) < 6:
         raise ValueError("A senha deve ter pelo menos 6 caracteres")
-    return {"username": username, "profile": profile, "active": active, "password": password}
+    confirm_password = str(data.get("confirm_password", password))
+    if creating and password != confirm_password:
+        raise ValueError("Confirmacao de senha diferente da senha")
+    return {"full_name": full_name, "username": username, "profile": profile, "active": active, "password": password}
 
 
 class FinanceHandler(SimpleHTTPRequestHandler):
@@ -310,7 +370,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         with connect() as conn:
             row = conn.execute(
                 """
-                SELECT users.id, users.username, users.profile, users.active, users.created_at
+                SELECT users.id, users.username, users.full_name, users.profile, users.active, users.created_at
                 FROM sessions
                 JOIN users ON users.id = sessions.user_id
                 WHERE sessions.token = ? AND sessions.expires_at > ? AND users.active = 1
@@ -326,12 +386,12 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return None
         return user
 
-    def require_admin(self):
+    def require_superadmin(self):
         user = self.require_user()
         if not user:
             return None
-        if user["profile"] != "admin":
-            self.send_error_json("Acesso permitido somente para administradores", HTTPStatus.FORBIDDEN)
+        if user["profile"] != "superadmin":
+            self.send_error_json("Acesso permitido somente para o SuperAdmin", HTTPStatus.FORBIDDEN)
             return None
         return user
 
@@ -369,6 +429,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             data = parse_body(self)
             if path == "/api/login":
                 return self.handle_login(data)
+            if path == "/api/register":
+                return self.handle_register(data)
             if path == "/api/logout":
                 return self.handle_logout()
             if path == "/api/change-password":
@@ -444,6 +506,22 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             )
             self.send_json({"token": token, "user": public_user(user)})
 
+    def handle_register(self, data):
+        payload = user_payload(data, creating=True, public=True)
+        salt, password_hash = hash_password(payload["password"])
+        try:
+            with connect() as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO users (username, full_name, password_hash, salt, profile, active, created_at)
+                    VALUES (?, ?, ?, ?, 'usuario', 1, ?)
+                    """,
+                    (payload["username"], payload["full_name"], password_hash, salt, now()),
+                )
+        except sqlite3.IntegrityError:
+            return self.send_error_json("Usuario ja existe")
+        self.send_json({"id": cur.lastrowid, "message": "Conta criada com sucesso. Faça login."}, HTTPStatus.CREATED)
+
     def handle_logout(self):
         token = self.headers.get("Authorization", "").replace("Bearer ", "").strip()
         with connect() as conn:
@@ -451,16 +529,16 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": True})
 
     def handle_list_users(self):
-        if self.require_admin() is None:
+        if self.require_superadmin() is None:
             return
         with connect() as conn:
             rows = conn.execute(
-                "SELECT id, username, profile, active, created_at FROM users ORDER BY username"
+                "SELECT id, username, full_name, profile, active, created_at FROM users ORDER BY username"
             ).fetchall()
         self.send_json({"users": [public_user(row) for row in rows]})
 
     def handle_create_user(self, data):
-        if self.require_admin() is None:
+        if self.require_superadmin() is None:
             return
         payload = user_payload(data, creating=True)
         salt, password_hash = hash_password(payload["password"])
@@ -468,11 +546,12 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             with connect() as conn:
                 cur = conn.execute(
                     """
-                    INSERT INTO users (username, password_hash, salt, profile, active, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO users (username, full_name, password_hash, salt, profile, active, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payload["username"],
+                        payload["full_name"],
                         password_hash,
                         salt,
                         payload["profile"],
@@ -485,28 +564,28 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"id": cur.lastrowid}, HTTPStatus.CREATED)
 
     def handle_update_user(self, user_id, data):
-        if self.require_admin() is None:
+        if self.require_superadmin() is None:
             return
         payload = user_payload(data)
         with connect() as conn:
             existing = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
             if not existing:
                 return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
-            if existing["username"] == "admin" and payload["username"] != "admin":
-                return self.send_error_json("O usuario admin principal nao pode ser renomeado")
-            profile = "admin" if existing["username"] == "admin" else payload["profile"]
-            active = 1 if existing["username"] == "admin" else payload["active"]
+            if existing["username"] == SUPERADMIN_USERNAME and payload["username"] != SUPERADMIN_USERNAME:
+                return self.send_error_json("O SuperAdmin principal nao pode ser renomeado")
+            profile = "superadmin" if existing["username"] == SUPERADMIN_USERNAME else payload["profile"]
+            active = 1 if existing["username"] == SUPERADMIN_USERNAME else payload["active"]
             try:
                 conn.execute(
-                    "UPDATE users SET username = ?, profile = ?, active = ? WHERE id = ?",
-                    (payload["username"], profile, active, user_id),
+                    "UPDATE users SET username = ?, full_name = ?, profile = ?, active = ? WHERE id = ?",
+                    (payload["username"], payload["full_name"], profile, active, user_id),
                 )
             except sqlite3.IntegrityError:
                 return self.send_error_json("Usuario ja existe")
         self.send_json({"ok": True})
 
     def handle_admin_change_password(self, user_id, data):
-        if self.require_admin() is None:
+        if self.require_superadmin() is None:
             return
         new_password = str(data.get("password", ""))
         if len(new_password) < 6:
@@ -522,14 +601,14 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": True})
 
     def handle_toggle_user(self, user_id):
-        if self.require_admin() is None:
+        if self.require_superadmin() is None:
             return
         with connect() as conn:
             user = conn.execute("SELECT username, active FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
-            if user["username"] == "admin":
-                return self.send_error_json("O usuario admin principal nao pode ser desativado")
+            if user["username"] == SUPERADMIN_USERNAME:
+                return self.send_error_json("O SuperAdmin principal nao pode ser desativado")
             new_active = 0 if user["active"] else 1
             conn.execute("UPDATE users SET active = ? WHERE id = ?", (new_active, user_id))
             if not new_active:
@@ -537,14 +616,14 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": True, "active": bool(new_active)})
 
     def handle_delete_user(self, user_id):
-        if self.require_admin() is None:
+        if self.require_superadmin() is None:
             return
         with connect() as conn:
             user = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
-            if user["username"] == "admin":
-                return self.send_error_json("O usuario admin principal nao pode ser excluido")
+            if user["username"] == SUPERADMIN_USERNAME:
+                return self.send_error_json("O SuperAdmin principal nao pode ser excluido")
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         self.send_json({"ok": True})
@@ -576,28 +655,30 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"categories": [row["name"] for row in rows]})
 
     def handle_dashboard(self, params):
-        if self.require_user() is None:
+        user = self.require_user()
+        if user is None:
             return
         normalize_overdue_expenses()
         selected = dashboard_period(params)
         start, end = month_range(selected["year"], selected["month"])
         today = today_iso()
+        scope_sql, scope_values = owned_update_suffix(user)
         with connect() as conn:
             expenses = conn.execute(
-                "SELECT * FROM expenses WHERE due_date >= ? AND due_date < ? ORDER BY due_date",
-                (start, end),
+                f"SELECT * FROM expenses WHERE due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date",
+                (start, end, *scope_values),
             ).fetchall()
             incomes = conn.execute(
-                "SELECT * FROM incomes WHERE receipt_date >= ? AND receipt_date < ? ORDER BY receipt_date",
-                (start, end),
+                f"SELECT * FROM incomes WHERE receipt_date >= ? AND receipt_date < ?{scope_sql} ORDER BY receipt_date",
+                (start, end, *scope_values),
             ).fetchall()
             upcoming = conn.execute(
-                """
+                f"""
                 SELECT * FROM expenses
-                WHERE status != 'Pago' AND due_date >= ?
+                WHERE status != 'Pago' AND due_date >= ?{scope_sql}
                 ORDER BY due_date LIMIT 6
                 """,
-                (today,),
+                (today, *scope_values),
             ).fetchall()
 
         total_pending = sum(row["amount"] for row in expenses if row["status"] != "Pago")
@@ -622,31 +703,38 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         )
 
     def handle_list_expenses(self, params):
-        if self.require_user() is None:
+        user = self.require_user()
+        if user is None:
             return
         normalize_overdue_expenses()
         where, values = filters_to_sql(params, "expenses")
+        where, values = apply_user_scope(where, values, user)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM expenses{where} ORDER BY due_date DESC, id DESC", values).fetchall()
         self.send_json({"expenses": [row_to_dict(row) for row in rows]})
 
     def handle_list_incomes(self, params):
-        if self.require_user() is None:
+        user = self.require_user()
+        if user is None:
             return
         where, values = filters_to_sql(params, "incomes")
+        where, values = apply_user_scope(where, values, user)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM incomes{where} ORDER BY receipt_date DESC, id DESC", values).fetchall()
         self.send_json({"incomes": [row_to_dict(row) for row in rows]})
 
     def handle_create_expense(self, data):
+        user = self.require_user()
+        if user is None:
+            return
         payload = expense_payload(data)
         stamp = now()
         with connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO expenses
-                (description, category, amount, due_date, status, payment_method, notes, payment_date, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (description, category, amount, due_date, status, payment_method, notes, payment_date, user_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["description"],
@@ -657,6 +745,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     payload["payment_method"],
                     payload["notes"],
                     payload["payment_date"],
+                    user["id"],
                     stamp,
                     stamp,
                 ),
@@ -664,14 +753,18 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"id": cur.lastrowid}, HTTPStatus.CREATED)
 
     def handle_update_expense(self, expense_id, data):
+        user = self.require_user()
+        if user is None:
+            return
         payload = expense_payload(data)
+        scope_sql, scope_values = owned_update_suffix(user)
         with connect() as conn:
-            conn.execute(
-                """
+            cur = conn.execute(
+                f"""
                 UPDATE expenses
                 SET description = ?, category = ?, amount = ?, due_date = ?, status = ?,
                     payment_method = ?, notes = ?, payment_date = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ?{scope_sql}
                 """,
                 (
                     payload["description"],
@@ -684,33 +777,45 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     payload["payment_date"],
                     now(),
                     expense_id,
+                    *scope_values,
                 ),
             )
+        if cur.rowcount == 0:
+            return self.send_error_json("Conta nao encontrada", HTTPStatus.NOT_FOUND)
         self.send_json({"ok": True})
 
     def handle_pay_expense(self, expense_id, data):
+        user = self.require_user()
+        if user is None:
+            return
         payment_date = str(data.get("payment_date") or today_iso()).strip()
         payment_method = str(data.get("payment_method", "")).strip()
+        scope_sql, scope_values = owned_update_suffix(user)
         with connect() as conn:
-            conn.execute(
-                """
+            cur = conn.execute(
+                f"""
                 UPDATE expenses
                 SET status = 'Pago', payment_date = ?, payment_method = COALESCE(NULLIF(?, ''), payment_method), updated_at = ?
-                WHERE id = ?
+                WHERE id = ?{scope_sql}
                 """,
-                (payment_date, payment_method, now(), expense_id),
+                (payment_date, payment_method, now(), expense_id, *scope_values),
             )
+        if cur.rowcount == 0:
+            return self.send_error_json("Conta nao encontrada", HTTPStatus.NOT_FOUND)
         self.send_json({"ok": True})
 
     def handle_create_income(self, data):
+        user = self.require_user()
+        if user is None:
+            return
         payload = income_payload(data)
         stamp = now()
         with connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO incomes
-                (description, category, amount, receipt_date, status, notes, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (description, category, amount, receipt_date, status, notes, user_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["description"],
@@ -719,6 +824,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     payload["receipt_date"],
                     payload["status"],
                     payload["notes"],
+                    user["id"],
                     stamp,
                     stamp,
                 ),
@@ -726,14 +832,18 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"id": cur.lastrowid}, HTTPStatus.CREATED)
 
     def handle_update_income(self, income_id, data):
+        user = self.require_user()
+        if user is None:
+            return
         payload = income_payload(data)
+        scope_sql, scope_values = owned_update_suffix(user)
         with connect() as conn:
-            conn.execute(
-                """
+            cur = conn.execute(
+                f"""
                 UPDATE incomes
                 SET description = ?, category = ?, amount = ?, receipt_date = ?, status = ?,
                     notes = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ?{scope_sql}
                 """,
                 (
                     payload["description"],
@@ -744,25 +854,36 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     payload["notes"],
                     now(),
                     income_id,
+                    *scope_values,
                 ),
             )
+        if cur.rowcount == 0:
+            return self.send_error_json("Receita nao encontrada", HTTPStatus.NOT_FOUND)
         self.send_json({"ok": True})
 
     def handle_delete(self, table, row_id):
+        user = self.require_user()
+        if user is None:
+            return
+        scope_sql, scope_values = owned_update_suffix(user)
         with connect() as conn:
-            conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+            cur = conn.execute(f"DELETE FROM {table} WHERE id = ?{scope_sql}", (row_id, *scope_values))
+        if cur.rowcount == 0:
+            return self.send_error_json("Registro nao encontrado", HTTPStatus.NOT_FOUND)
         self.send_json({"ok": True})
 
     def handle_report(self, params):
-        if self.require_user() is None:
+        user = self.require_user()
+        if user is None:
             return
-        data = build_report(params)
+        data = build_report(params, user)
         self.send_json(data)
 
     def handle_report_export(self, params):
-        if self.require_user() is None:
+        user = self.require_user()
+        if user is None:
             return
-        report = build_report(params)
+        report = build_report(params, user)
         rows = [
             ["Resumo", "Valor"],
             ["Total de receitas", money_value(report["summary"]["total_income"])],
@@ -796,19 +917,20 @@ def dashboard_period(params):
     }
 
 
-def build_report(params):
+def build_report(params, user):
     normalize_overdue_expenses()
     selected = dashboard_period(params)
     start, end = month_range(selected["year"], selected["month"])
     movement_type = params.get("type", "")
+    scope_sql, scope_values = owned_update_suffix(user)
     with connect() as conn:
         expenses = [] if movement_type == "Receita" else [row_to_dict(row) for row in conn.execute(
-            "SELECT * FROM expenses WHERE due_date >= ? AND due_date < ? ORDER BY due_date, id",
-            (start, end),
+            f"SELECT * FROM expenses WHERE due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date, id",
+            (start, end, *scope_values),
         ).fetchall()]
         incomes = [] if movement_type == "Despesa" else [row_to_dict(row) for row in conn.execute(
-            "SELECT * FROM incomes WHERE receipt_date >= ? AND receipt_date < ? ORDER BY receipt_date, id",
-            (start, end),
+            f"SELECT * FROM incomes WHERE receipt_date >= ? AND receipt_date < ?{scope_sql} ORDER BY receipt_date, id",
+            (start, end, *scope_values),
         ).fetchall()]
 
     total_income = sum(item["amount"] for item in incomes)

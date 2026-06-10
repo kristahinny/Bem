@@ -17,7 +17,17 @@
         <label>Usuario<input name="username" value="admin" autocomplete="username" required></label>
         <label>Senha<input name="password" type="password" value="admin123" autocomplete="current-password" required></label>
         <button class="primary" type="submit">Entrar</button>
+        <button id="showRegisterBtn" class="ghost" type="button">Criar conta</button>
         <p id="loginMsg" class="message"></p>
+      </form>
+      <form id="registerForm" class="form-stack hidden">
+        <label>Nome<input name="full_name" autocomplete="name" required></label>
+        <label>Usuario<input name="username" autocomplete="username" required></label>
+        <label>Senha<input name="password" type="password" minlength="6" autocomplete="new-password" required></label>
+        <label>Confirmar senha<input name="confirm_password" type="password" minlength="6" autocomplete="new-password" required></label>
+        <button class="primary" type="submit">Cadastrar</button>
+        <button id="showLoginBtn" class="ghost" type="button">Voltar para login</button>
+        <p id="registerMsg" class="message"></p>
       </form>
     </section>
   </main>
@@ -152,6 +162,7 @@
           <div class="section-head"><h3>Usuario</h3><button id="clearUserForm" class="ghost">Limpar</button></div>
           <form id="userForm" class="grid-form">
             <input type="hidden" name="id">
+            <label>Nome<input name="full_name" autocomplete="off" required></label>
             <label>Usuario<input name="username" autocomplete="off" required></label>
             <label>Perfil<select name="profile"><option value="usuario">usuario</option><option value="admin">admin</option></select></label>
             <label>Status<select name="active"><option value="true">Ativo</option><option value="false">Inativo</option></select></label>
@@ -163,7 +174,7 @@
           <div class="section-head"><h3>Usuarios cadastrados</h3><div id="userCount" class="badge">0</div></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Usuario</th><th>Perfil</th><th>Status</th><th>Criado em</th><th>Acoes</th></tr></thead>
+              <thead><tr><th>Nome</th><th>Usuario</th><th>Perfil</th><th>Status</th><th>Criado em</th><th>Acoes</th></tr></thead>
               <tbody id="usersTable"></tbody>
             </table>
           </div>

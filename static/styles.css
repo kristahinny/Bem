@@ -202,6 +202,9 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
 .pill.Pago, .pill.Recebido { background: #e4f4eb; color: var(--paid); }
 .pill.Pendente { background: #fff2d8; color: var(--pending); }
 .pill.Vencido { background: #f9e4e2; color: var(--overdue); }
+.pill.usuario { background: #eef2f6; color: #526173; }
+.pill.admin { background: #e7edf7; color: var(--brand); }
+.pill.superadmin { background: #f1e8ff; color: #6842a0; }
 
 .mini-list { display: grid; gap: 10px; margin-top: 14px; }
 .mini-item {
