@@ -1,4 +1,5 @@
 import json
+import base64
 import os
 import shutil
 import sys
@@ -90,6 +91,11 @@ def main():
             },
             super_token,
         )
+        category = request("POST", "/api/categories", {"name": "Categoria Teste Seguro"}, super_token)
+        categories_before = request("GET", "/api/categories/manage", token=super_token)
+        request("PUT", f"/api/categories/{category['id']}", {"name": "Categoria Teste Seguro Editada", "active": "true"}, super_token)
+        request("DELETE", f"/api/categories/{category['id']}", token=super_token)
+        categories_after_delete = request("GET", "/api/categories/manage", token=super_token)
         expense = request(
             "POST",
             "/api/expenses",
@@ -120,10 +126,47 @@ def main():
         admin_login = request("POST", "/api/login", {"username": "admin_criado", "password": "admin123"})
         admin_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=admin_login["token"])
         request("POST", f"/api/expenses/{expense['id']}/pay", {"payment_date": "2026-06-09"}, normal_login["token"])
+        template_bytes = request("GET", "/api/import/template", token=normal_login["token"])
+        template_sheets = server.read_xlsx_workbook(template_bytes)
+        import_workbook = server.build_xlsx(
+            {
+                "DESPESAS": [
+                    server.IMPORT_SHEETS["DESPESAS"]["headers"],
+                    ["Despesa importada", "Moradia", "100", "2026-06-20", "Pendente", "Pix", ""],
+                    ["", "", "", "", "", "", ""],
+                ],
+                "RECEITAS": [
+                    server.IMPORT_SHEETS["RECEITAS"]["headers"],
+                    ["Receita importada", "Outros", "200", "2026-06-21", "Recebido", ""],
+                ],
+                "METAS": [
+                    server.IMPORT_SHEETS["METAS"]["headers"],
+                    ["Meta importada", "Teste de meta", "1000", "100", "2026-12-31", "Em andamento"],
+                ],
+                "PARCELADAS": [
+                    server.IMPORT_SHEETS["PARCELADAS"]["headers"],
+                    ["Compra parcelada importada", "Cartao de Credito", "600", "2", "2026-06-25", "Pendente", "Cartao", ""],
+                ],
+            }
+        )
+        workbook_payload = {"filename": "modelo-importacao-financeira.xlsx", "content_base64": base64.b64encode(import_workbook).decode("ascii")}
+        preview = request(
+            "POST",
+            "/api/import/preview",
+            workbook_payload,
+            normal_login["token"],
+        )
+        committed = request("POST", "/api/import/commit", {"rows": preview["valid"]}, normal_login["token"])
+        duplicate_commit = request("POST", "/api/import/commit", {"rows": preview["valid"]}, normal_login["token"])
+        request("DELETE", f"/api/expenses/{expense['id']}", token=normal_login["token"])
+        after_soft_delete_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
         normal_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
         normal_incomes = request("GET", "/api/incomes?month=6&year=2026", token=normal_login["token"])
+        normal_goals = request("GET", "/api/goals", token=normal_login["token"])
         admin_expenses = request("GET", "/api/expenses?month=6&year=2026", token=admin_login["token"])
         admin_incomes = request("GET", "/api/incomes?month=6&year=2026", token=admin_login["token"])
+        request("DELETE", f"/api/users/{created_admin['id']}", token=super_token)
+        users_after_delete = request("GET", "/api/users", token=super_token)
         super_expenses = request("GET", "/api/expenses?month=6&year=2026", token=super_token)
         filtered_super_expenses = request(
             "GET",
@@ -149,12 +192,22 @@ def main():
         assert_true(normal_login["user"]["profile"] == "usuario", "cadastro publico nao criou usuario comum")
         assert_true(duplicate_blocked, "usuario duplicado nao foi bloqueado")
         assert_true(blocked, "usuario comum acessou menu/rota de usuarios")
-        assert_true(any(item["id"] == expense["id"] for item in normal_expenses["expenses"]), "conta cadastrada nao apareceu para o usuario")
+        assert_true(any(item["id"] == category["id"] and item["active"] == 0 for item in categories_after_delete["categories"]), "categoria foi apagada em vez de desativada")
+        assert_true(any(item["name"] == "Categoria Teste Seguro" for item in categories_before["categories"]), "categoria nao foi criada/listada")
+        assert_true(set(template_sheets.keys()) >= {"DESPESAS", "RECEITAS", "METAS", "PARCELADAS"}, "modelo XLSX nao possui as abas oficiais")
+        assert_true(preview["errors"] == [] and len(preview["valid"]) == 4, "preview de importacao XLSX falhou")
+        assert_true(committed["imported"] == 5, "importacao XLSX nao inseriu despesas, receitas, metas e parcelas")
+        assert_true(duplicate_commit["imported"] == 0 and duplicate_commit["skipped"] == 4, "importacao duplicada nao foi ignorada")
+        assert_true(not any(item["id"] == expense["id"] for item in after_soft_delete_expenses["expenses"]), "despesa desativada continuou na listagem")
+        assert_true(any(item["id"] == created_admin["id"] and item["active"] is False for item in users_after_delete["users"]), "usuario foi apagado em vez de desativado")
+        assert_true(any(item["description"] == "Despesa importada" for item in normal_expenses["expenses"]), "despesa importada nao apareceu para o usuario")
+        assert_true(any(item["description"] == "Compra parcelada importada (1/2)" for item in normal_expenses["expenses"]), "parcela importada nao apareceu para o usuario")
         assert_true(any(item["id"] == income["id"] for item in normal_incomes["incomes"]), "receita cadastrada nao apareceu para o usuario")
+        assert_true(any(item["name"] == "Meta importada" for item in normal_goals["goals"]), "meta importada nao apareceu para o usuario")
         assert_true(not admin_expenses["expenses"], "admin sem lancamentos viu contas de outro usuario")
         assert_true(not admin_incomes["incomes"], "admin sem lancamentos viu receitas de outro usuario")
-        assert_true(any(item["id"] == expense["id"] for item in super_expenses["expenses"]), "superadmin nao viu todos os registros")
-        assert_true(any(item["id"] == expense["id"] for item in filtered_super_expenses["expenses"]), "filtro por usuario do superadmin nao retornou a conta")
+        assert_true(any(item["description"] == "Despesa importada" for item in super_expenses["expenses"]), "superadmin nao viu todos os registros")
+        assert_true(any(item["description"] == "Despesa importada" for item in filtered_super_expenses["expenses"]), "filtro por usuario do superadmin nao retornou a conta")
         assert_true(filtered_super_dashboard["cards"]["total_income"] == dashboard["cards"]["total_income"], "dashboard filtrado do superadmin divergiu do usuario")
         assert_true(filtered_super_report["summary"]["final_balance"] == report["summary"]["final_balance"], "relatorio filtrado do superadmin divergiu do usuario")
         print(
@@ -165,6 +218,11 @@ def main():
                     "public_user_id": public_user["id"],
                     "duplicate_blocked": duplicate_blocked,
                     "created_admin_id": created_admin["id"],
+                    "category_soft_deleted": True,
+                    "user_soft_deleted": True,
+                    "imported": committed["imported"],
+                    "duplicate_import_skipped": duplicate_commit["skipped"],
+                    "xlsx_template_bytes": len(template_bytes),
                     "normal_login": normal_login["user"]["username"],
                     "normal_profile": normal_login["user"]["profile"],
                     "normal_user_blocked_from_users": blocked,

@@ -43,8 +43,7 @@
         <button data-view="expenses" class="nav-btn">Contas a pagar</button>
         <button data-view="incomes" class="nav-btn">Receitas</button>
         <button data-view="reports" class="nav-btn">Relatorios</button>
-        <button data-view="users" class="nav-btn admin-only hidden">Usuarios</button>
-        <button data-view="settings" class="nav-btn">Senha</button>
+        <button data-view="settings" class="nav-btn">Configurações</button>
       </nav>
       <button id="logoutBtn" class="ghost">Sair</button>
     </aside>
@@ -158,9 +157,20 @@
         </div>
       </section>
 
-      <section id="usersView" class="view hidden">
-        <div class="panel">
-          <div class="section-head"><h3>Usuario</h3><button id="clearUserForm" class="ghost">Limpar</button></div>
+      <section id="settingsView" class="view hidden">
+        <div class="panel category-admin-only hidden">
+          <div class="section-head"><h3>Categorias</h3><button id="clearCategoryForm" class="ghost">Limpar</button></div>
+          <form id="categoryForm" class="grid-form">
+            <input type="hidden" name="id">
+            <label>Categoria<input name="name" required></label>
+            <label>Status<select name="active"><option value="true">Ativa</option><option value="false">Inativa</option></select></label>
+            <button class="primary" type="submit">Salvar categoria</button>
+          </form>
+          <div class="table-wrap"><table><thead><tr><th>Categoria</th><th>Status</th><th>Ações</th></tr></thead><tbody id="categoriesTable"></tbody></table></div>
+        </div>
+
+        <div class="panel admin-only hidden">
+          <div class="section-head"><h3>Usuários</h3><button id="clearUserForm" class="ghost">Limpar</button></div>
           <form id="userForm" class="grid-form">
             <input type="hidden" name="id">
             <label>Nome<input name="full_name" autocomplete="off" required></label>
@@ -170,8 +180,6 @@
             <label>Senha<input name="password" type="password" minlength="6" autocomplete="new-password"></label>
             <button class="primary" type="submit">Salvar usuario</button>
           </form>
-        </div>
-        <div class="panel">
           <div class="section-head"><h3>Usuarios cadastrados</h3><div id="userCount" class="badge">0</div></div>
           <div class="table-wrap">
             <table>
@@ -180,11 +188,17 @@
             </table>
           </div>
         </div>
-      </section>
 
-      <section id="settingsView" class="view hidden">
+        <div class="panel">
+          <div class="section-head"><h3>Importação Excel</h3><button id="downloadTemplate" class="ghost" type="button">Baixar Modelo Excel</button></div>
+          <input id="importFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+          <button id="commitImport" class="primary" type="button">Importar válidos</button>
+          <p id="importSummary" class="message"></p>
+          <div class="table-wrap"><table><tbody id="importPreview"></tbody></table></div>
+        </div>
+
         <div class="panel narrow">
-          <h3>Trocar senha</h3>
+          <h3>Perfil/Senha</h3>
           <form id="passwordForm" class="form-stack">
             <label>Senha atual<input name="old_password" type="password" required></label>
             <label>Nova senha<input name="new_password" type="password" minlength="6" required></label>

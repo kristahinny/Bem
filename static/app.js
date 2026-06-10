@@ -6,6 +6,9 @@ const state = {
   expenses: [],
   incomes: [],
   users: [],
+  categoriesManaged: [],
+  importRows: [],
+  importPayload: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -80,7 +83,9 @@ function showApp() {
   $("#loginScreen").classList.add("hidden");
   $("#appShell").classList.remove("hidden");
   const isSuperAdmin = state.user?.profile === "superadmin";
+  const isCategoryAdmin = ["superadmin", "admin"].includes(state.user?.profile);
   $$(".admin-only").forEach((el) => el.classList.toggle("hidden", !isSuperAdmin));
+  $$(".category-admin-only").forEach((el) => el.classList.toggle("hidden", !isCategoryAdmin));
 }
 
 function showLogin() {
@@ -103,12 +108,8 @@ function showLoginForm(message = "") {
 }
 
 function setView(view) {
-  if (view === "users" && state.user?.profile !== "superadmin") {
-    toast("Acesso permitido somente para o SuperAdmin.");
-    view = "dashboard";
-  }
   state.view = view;
-  const titles = { dashboard: "Dashboard", expenses: "Contas a pagar", incomes: "Receitas", reports: "Relatorios", users: "Usuarios", settings: "Senha" };
+  const titles = { dashboard: "Dashboard", expenses: "Contas a pagar", incomes: "Receitas", reports: "Relatorios", settings: "Configurações" };
   $("#viewTitle").textContent = titles[view];
   $$(".view").forEach((el) => el.classList.add("hidden"));
   $(`#${view}View`).classList.remove("hidden");
@@ -235,6 +236,22 @@ async function loadUsers() {
   `).join("") || `<tr><td colspan="6">Nenhum usuario cadastrado.</td></tr>`;
 }
 
+async function loadManagedCategories() {
+  if (!["superadmin", "admin"].includes(state.user?.profile)) return;
+  const data = await api("/api/categories/manage");
+  state.categoriesManaged = data.categories;
+  $("#categoriesTable").innerHTML = data.categories.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.name)}</td>
+      <td><span class="pill ${item.active ? "Recebido" : "Vencido"}">${item.active ? "Ativa" : "Inativa"}</span></td>
+      <td class="actions">
+        <button class="edit" onclick="editCategory(${item.id})">Editar</button>
+        <button class="success" onclick="toggleCategory(${item.id})">${item.active ? "Desativar" : "Ativar"}</button>
+      </td>
+    </tr>
+  `).join("") || `<tr><td colspan="3">Nenhuma categoria cadastrada.</td></tr>`;
+}
+
 function reportRows(items, dateField) {
   return items.map((item) => `
     <tr><td>${escapeHtml(item.description)}</td><td>${fmtDate(item[dateField])}</td><td>${money(item.amount)}</td><td><span class="pill ${item.status}">${item.status}</span></td></tr>
@@ -248,7 +265,10 @@ async function refreshAll() {
     if (state.view === "expenses") await loadExpenses();
     if (state.view === "incomes") await loadIncomes();
     if (state.view === "reports") await loadReport();
-    if (state.view === "users") await loadUsers();
+    if (state.view === "settings") {
+      if (state.user?.profile === "superadmin") await loadUsers();
+      if (["superadmin", "admin"].includes(state.user?.profile)) await loadManagedCategories();
+    }
   } catch (error) {
     toast(error.message);
   }
@@ -350,6 +370,73 @@ async function saveUser(event) {
   await loadUserOptions();
 }
 
+async function saveCategory(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form) return;
+  const data = formData(form);
+  const id = data.id;
+  delete data.id;
+  await api(id ? `/api/categories/${id}` : "/api/categories", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
+  clearForm(form);
+  toast("Categoria salva.");
+  await loadCategories();
+  await loadManagedCategories();
+}
+
+async function parseImportFile(file) {
+  const contentBase64 = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
+    reader.onerror = () => reject(new Error("Nao foi possivel ler a planilha."));
+    reader.readAsDataURL(file);
+  });
+  return { filename: file.name, content_base64: contentBase64 };
+}
+
+function importRowTitle(row) {
+  return row.description || row.name || row.descricao || "";
+}
+
+function importRowAmount(row) {
+  return row.amount || row.target_amount || row.total_amount || 0;
+}
+
+async function previewImport(event) {
+  const file = event.currentTarget.files?.[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith(".xlsx")) {
+    toast("Selecione o modelo Excel .xlsx.");
+    event.currentTarget.value = "";
+    return;
+  }
+  state.importPayload = await parseImportFile(file);
+  const data = await api("/api/import/preview", { method: "POST", body: JSON.stringify(state.importPayload) });
+  state.importRows = data.valid;
+  $("#importSummary").textContent = `${data.valid.length} linhas validas, ${data.errors.length} erros encontrados.`;
+  $("#importPreview").innerHTML = [
+    ...data.valid.slice(0, 20).map((row) => `<tr><td>OK</td><td>${escapeHtml(row.sheet)} linha ${row.line}</td><td>${escapeHtml(row.tipo)}</td><td>${escapeHtml(importRowTitle(row))}</td><td>${money(importRowAmount(row))}</td></tr>`),
+    ...data.errors.map((err) => `<tr><td>Erro</td><td>${escapeHtml(err.sheet || "")} linha ${err.line}</td><td colspan="3">${escapeHtml(err.error)}</td></tr>`),
+  ].join("");
+}
+
+async function commitImport() {
+  if (!state.importRows.length) {
+    toast("Selecione uma planilha primeiro.");
+    return;
+  }
+  const payload = { rows: state.importRows };
+  if (state.user?.profile === "superadmin" && $("#filterUser")?.value) payload.user_id = $("#filterUser").value;
+  const data = await api("/api/import/commit", { method: "POST", body: JSON.stringify(payload) });
+  toast(`${data.imported} registros importados. ${data.skipped || 0} duplicados ignorados.`);
+  state.importRows = [];
+  state.importPayload = null;
+  if ($("#importFile")) $("#importFile").value = "";
+  $("#importSummary").textContent = "";
+  $("#importPreview").innerHTML = "";
+  await refreshAll();
+}
+
 async function registerAccount(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -396,6 +483,20 @@ window.editIncome = (id) => {
 window.editUser = (id) => {
   const item = state.users.find((row) => row.id === id);
   if (item) fillForm($("#userForm"), { ...item, active: item.active ? "true" : "false", password: "" });
+};
+
+window.editCategory = (id) => {
+  const item = state.categoriesManaged.find((row) => row.id === id);
+  if (item) fillForm($("#categoryForm"), { ...item, active: item.active ? "true" : "false" });
+};
+
+window.toggleCategory = async (id) => {
+  const item = state.categoriesManaged.find((row) => row.id === id);
+  if (!item) return;
+  await api(`/api/categories/${id}`, { method: "PUT", body: JSON.stringify({ name: item.name, active: !item.active }) });
+  toast("Categoria atualizada.");
+  await loadCategories();
+  await loadManagedCategories();
 };
 
 window.deleteExpense = async (id) => {
@@ -506,6 +607,13 @@ function bindEvents() {
   on("#exportReport", "click", exportReport);
   on("#userForm", "submit", saveUser);
   on("#clearUserForm", "click", () => clearForm($("#userForm")));
+  on("#categoryForm", "submit", saveCategory);
+  on("#clearCategoryForm", "click", () => clearForm($("#categoryForm")));
+  on("#downloadTemplate", "click", () => {
+    window.location.href = "/api/import/template";
+  });
+  on("#importFile", "change", previewImport);
+  on("#commitImport", "click", commitImport);
   on("#passwordForm", "submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;

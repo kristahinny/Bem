@@ -49,6 +49,7 @@ Abra `http://localhost:8000`.
 - Cadastro, edicao e exclusao de receitas
 - Filtros por mes, ano, status e categoria
 - Relatorio mensal com exportacao CSV
+- Importacao Excel por modelo oficial `.xlsx` com abas DESPESAS, RECEITAS, METAS e PARCELADAS
 - Categorias padrao criadas automaticamente
 
 ## Observacoes para uso real
