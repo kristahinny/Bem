@@ -27,18 +27,6 @@ SUPERADMIN_USERNAME = "krisrosa"
 SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD") or "admin123"
 
 DEFAULT_CATEGORIES = [
-<<<<<<< HEAD
-=======
-    "Mercado",
-    "Energia",
-    "Agua",
-    "Internet",
-    "Aluguel",
-    "Cartao de credito",
-    "Emprestimo",
-    "Salario",
-    "Servico",
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
     "Moradia",
     "Alimentação",
     "Transporte",
@@ -227,7 +215,6 @@ def ensure_financial_columns(conn):
         conn.execute("ALTER TABLE expenses ADD COLUMN user_id INTEGER")
     if "user_id" not in income_columns:
         conn.execute("ALTER TABLE incomes ADD COLUMN user_id INTEGER")
-<<<<<<< HEAD
     if "active" not in expense_columns:
         conn.execute("ALTER TABLE expenses ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
     if "active" not in income_columns:
@@ -274,16 +261,6 @@ def ensure_goal_table(conn):
     }.items():
         if column not in columns:
             conn.execute(f"ALTER TABLE goals ADD COLUMN {column} {definition}")
-=======
-    if "installment_group" not in expense_columns:
-        conn.execute("ALTER TABLE expenses ADD COLUMN installment_group TEXT")
-    if "installment_number" not in expense_columns:
-        conn.execute("ALTER TABLE expenses ADD COLUMN installment_number INTEGER")
-    if "installment_total" not in expense_columns:
-        conn.execute("ALTER TABLE expenses ADD COLUMN installment_total INTEGER")
-    if "cancelled" not in expense_columns:
-        conn.execute("ALTER TABLE expenses ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0")
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
 
 
 def now():
@@ -509,7 +486,6 @@ def clean_money(value):
     return round(amount, 2)
 
 
-<<<<<<< HEAD
 def clean_date(value):
     value = str(value or "").strip()
     if not value:
@@ -531,13 +507,11 @@ def add_months(value, months):
     month = month % 12 + 1
     max_day = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
     return date(year, month, min(base.day, max_day)).isoformat()
-=======
 def clean_int(value, default=0):
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
 
 
 def require_fields(data, fields):
@@ -795,13 +769,10 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     return self.handle_report(params)
                 if path == "/api/report/export":
                     return self.handle_report_export(params)
-<<<<<<< HEAD
-=======
                 if path == "/api/charts":
                     return self.handle_charts(params)
                 if path == "/api/cashflow":
                     return self.handle_cashflow(params)
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
                 if path == "/api/import/template":
                     return self.handle_import_template()
                 return self.send_error_json("Rota nao encontrada", HTTPStatus.NOT_FOUND)
@@ -1070,47 +1041,31 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"categories": [row["name"] for row in rows]})
 
     def handle_manage_categories(self):
-<<<<<<< HEAD
-        if self.require_category_admin() is None:
+        if self.require_superadmin() is None:
             return
         with connect() as conn:
             rows = conn.execute("SELECT id, name, active FROM categories ORDER BY name").fetchall()
         self.send_json({"categories": [row_to_dict(row) for row in rows]})
 
     def handle_create_category(self, data):
-        if self.require_category_admin() is None:
-=======
         if self.require_superadmin() is None:
-            return
-        with connect() as conn:
-            rows = conn.execute("SELECT id, name FROM categories ORDER BY name").fetchall()
-        self.send_json({"categories": [row_to_dict(row) for row in rows]})
-
-    def handle_create_category(self, data):
-        if self.require_superadmin() is None:
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
             return
         name = str(data.get("name", "")).strip()
         if not name:
             raise ValueError("Nome da categoria obrigatorio")
         try:
             with connect() as conn:
-<<<<<<< HEAD
                 existing = conn.execute("SELECT id FROM categories WHERE name = ?", (name,)).fetchone()
                 if existing:
                     conn.execute("UPDATE categories SET active = 1 WHERE id = ?", (existing["id"],))
                     return self.send_json({"id": existing["id"], "reactivated": True})
                 cur = conn.execute("INSERT INTO categories (name, active) VALUES (?, 1)", (name,))
-=======
-                cur = conn.execute("INSERT INTO categories (name) VALUES (?)", (name,))
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
         except sqlite3.IntegrityError:
             return self.send_error_json("Categoria ja existe")
         self.send_json({"id": cur.lastrowid}, HTTPStatus.CREATED)
 
-<<<<<<< HEAD
     def handle_update_category(self, category_id, data):
-        if self.require_category_admin() is None:
+        if self.require_superadmin() is None:
             return
         name = str(data.get("name", "")).strip()
         active = 1 if str(data.get("active", "true")).lower() in ("1", "true", "sim", "on") else 0
@@ -1124,20 +1079,12 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 )
         except sqlite3.IntegrityError:
             return self.send_error_json("Categoria ja existe")
-=======
-    def handle_delete_category(self, category_id):
-        if self.require_superadmin() is None:
-            return
-        with connect() as conn:
-            cur = conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
         if cur.rowcount == 0:
             return self.send_error_json("Categoria nao encontrada", HTTPStatus.NOT_FOUND)
         self.send_json({"ok": True})
 
-<<<<<<< HEAD
     def handle_delete_category(self, category_id):
-        if self.require_category_admin() is None:
+        if self.require_superadmin() is None:
             return
         with connect() as conn:
             cur = conn.execute("UPDATE categories SET active = 0 WHERE id = ?", (category_id,))
@@ -1145,8 +1092,6 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return self.send_error_json("Categoria nao encontrada", HTTPStatus.NOT_FOUND)
         self.send_json({"ok": True, "deactivated": True})
 
-=======
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
     def handle_dashboard(self, params):
         user = self.require_user()
         if user is None:
@@ -1168,11 +1113,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             upcoming = conn.execute(
                 f"""
                 SELECT * FROM expenses
-<<<<<<< HEAD
-                WHERE active = 1 AND status != 'Pago' AND due_date >= ?{scope_sql}
-=======
-                WHERE status != 'Pago' AND cancelled = 0 AND due_date >= ?{scope_sql}
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
+                WHERE active = 1 AND status != 'Pago' AND cancelled = 0 AND due_date >= ?{scope_sql}
                 ORDER BY due_date LIMIT 6
                 """,
                 (today, *scope_values),
@@ -1225,14 +1166,10 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return
         normalize_overdue_expenses()
         where, values = filters_to_sql(params, "expenses")
-<<<<<<< HEAD
-        where = (where + " AND active = 1") if where else " WHERE active = 1"
-=======
         if where:
-            where += " AND cancelled = 0"
+            where += " AND active = 1 AND cancelled = 0"
         else:
-            where = " WHERE cancelled = 0"
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
+            where = " WHERE active = 1 AND cancelled = 0"
         where, values = apply_user_scope(where, values, user, params)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM expenses{where} ORDER BY due_date DESC, id DESC", values).fetchall()
@@ -1573,13 +1510,6 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-<<<<<<< HEAD
-    def handle_import_template_legacy_csv(self):
-        rows = [
-            ["tipo", "descricao_ou_nome", "categoria", "valor", "data", "status", "observacao"],
-            ["despesa", "Mercado", "Alimentação", "150.00", "2026-06-15", "Pendente", ""],
-            ["receita", "Salario", "Salario", "3500.00", "2026-06-05", "Recebido", ""],
-=======
     def handle_charts(self, params):
         user = self.require_user()
         if user is None:
@@ -1661,7 +1591,6 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             ["despesa", "Consulta", "Saúde", "200.00", "2026-06-15", "Pendente", "Especialidade"],
             ["receita", "Salario", "Salario", "3500.00", "2026-06-05", "Recebido", ""],
             ["meta", "Reserva de Emergencia", "", "10000.00", "2026-12-31", "Ativa", "Meta principal"],
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
         ]
         payload = csv_string(rows).encode("utf-8-sig")
         self.send_response(HTTPStatus.OK)
@@ -1671,7 +1600,6 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-<<<<<<< HEAD
     def validate_import_rows_legacy_csv(self, rows):
         valid = []
         errors = []
@@ -1682,16 +1610,6 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 continue
             item_type = str(row.get("tipo", "")).strip().lower()
             description = str(row.get("descricao_ou_nome", "")).strip()
-=======
-    def validate_import_rows(self, rows):
-        valid = []
-        errors = []
-        for index, row in enumerate(rows, start=1):
-            if not any(str(value).strip() for value in row.values()):
-                continue
-            item_type = str(row.get("tipo", "")).strip().lower()
-            desc = str(row.get("descricao_ou_nome", "")).strip()
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
             category = str(row.get("categoria", "")).strip()
             date_value = str(row.get("data", "")).strip()
             status = str(row.get("status", "")).strip()
@@ -1700,22 +1618,11 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             except ValueError as exc:
                 errors.append({"line": index, "error": str(exc)})
                 continue
-<<<<<<< HEAD
             if item_type not in ("despesa", "receita"):
                 errors.append({"line": index, "error": "Tipo invalido"})
                 continue
             if not description or not category or not date_value:
                 errors.append({"line": index, "error": "Descricao, categoria e data sao obrigatorias"})
-=======
-            if item_type not in ("despesa", "receita", "meta"):
-                errors.append({"line": index, "error": "Tipo invalido"})
-                continue
-            if not desc:
-                errors.append({"line": index, "error": "Descricao ou nome obrigatorio"})
-                continue
-            if item_type in ("despesa", "receita") and not category:
-                errors.append({"line": index, "error": "Categoria obrigatoria"})
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
                 continue
             if item_type == "despesa" and status not in ("Pendente", "Pago", "Vencido"):
                 errors.append({"line": index, "error": "Status de despesa invalido"})
@@ -1723,7 +1630,6 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             if item_type == "receita" and status not in ("Recebido", "Pendente"):
                 errors.append({"line": index, "error": "Status de receita invalido"})
                 continue
-<<<<<<< HEAD
             valid.append({**row, "tipo": item_type, "descricao_ou_nome": description, "categoria": category, "valor": amount, "data": date_value, "status": status})
         return valid, errors
 
@@ -1734,37 +1640,13 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"valid": valid, "errors": errors})
 
     def handle_import_commit_legacy_csv(self, data):
-=======
-            if item_type == "meta" and status not in ("Ativa", "Concluida", "Pausada", "Cancelada"):
-                errors.append({"line": index, "error": "Status de meta invalido"})
-                continue
-            valid.append({**row, "tipo": item_type, "valor": amount})
-        return valid, errors
-
-    def handle_import_preview(self, data):
-        user = self.require_user()
-        if user is None:
-            return
-        rows = data.get("rows", [])
-        if not isinstance(rows, list):
-            raise ValueError("Linhas invalidas")
-        valid, errors = self.validate_import_rows(rows)
-        self.send_json({"valid": valid, "errors": errors})
-
-    def handle_import_commit(self, data):
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
         user = self.require_user()
         if user is None:
             return
         target_user_id = user["id"]
         if user["profile"] == "superadmin" and data.get("user_id"):
             target_user_id = int(data.get("user_id"))
-<<<<<<< HEAD
         valid, errors = self.validate_import_rows_legacy_csv(data.get("rows", []))
-=======
-        rows = data.get("rows", [])
-        valid, errors = self.validate_import_rows(rows)
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
         if errors:
             return self.send_json({"imported": 0, "errors": errors}, HTTPStatus.BAD_REQUEST)
         stamp = now()
@@ -1775,46 +1657,23 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     conn.execute(
                         """
                         INSERT INTO expenses
-<<<<<<< HEAD
                         (description, category, amount, due_date, status, notes, user_id, active, created_at, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-=======
-                        (description, category, amount, due_date, status, notes, user_id, cancelled, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-                        """,
-                        (row["descricao_ou_nome"], row["categoria"], row["valor"], row["data"], row["status"], row.get("observacao", ""), target_user_id, stamp, stamp),
-                    )
-                elif row["tipo"] == "receita":
-                    conn.execute(
-                        """
-                        INSERT INTO incomes
-                        (description, category, amount, receipt_date, status, notes, user_id, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
                         """,
                         (row["descricao_ou_nome"], row["categoria"], row["valor"], row["data"], row["status"], row.get("observacao", ""), target_user_id, stamp, stamp),
                     )
                 else:
                     conn.execute(
                         """
-<<<<<<< HEAD
                         INSERT INTO incomes
                         (description, category, amount, receipt_date, status, notes, user_id, active, created_at, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                         """,
                         (row["descricao_ou_nome"], row["categoria"], row["valor"], row["data"], row["status"], row.get("observacao", ""), target_user_id, stamp, stamp),
-=======
-                        INSERT INTO goals
-                        (user_id, name, description, target_amount, current_amount, target_date, status, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)
-                        """,
-                        (target_user_id, row["descricao_ou_nome"], row.get("observacao", ""), row["valor"], row["data"], row["status"], stamp, stamp),
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
                     )
                 imported += 1
         self.send_json({"imported": imported, "errors": []})
 
-<<<<<<< HEAD
     def handle_import_template(self):
         payload = build_import_template()
         self.send_response(HTTPStatus.OK)
@@ -2018,8 +1877,6 @@ def insert_import_row(conn, row, user_id, stamp):
         return created
     return 0
 
-=======
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
 
 def dashboard_period(params):
     today = date.today()
@@ -2037,11 +1894,7 @@ def build_report(params, user):
     scope_sql, scope_values = owned_update_suffix(user, params)
     with connect() as conn:
         expenses = [] if movement_type == "Receita" else [row_to_dict(row) for row in conn.execute(
-<<<<<<< HEAD
-            f"SELECT * FROM expenses WHERE active = 1 AND due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date, id",
-=======
-            f"SELECT * FROM expenses WHERE cancelled = 0 AND due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date, id",
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
+            f"SELECT * FROM expenses WHERE active = 1 AND cancelled = 0 AND due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date, id",
             (start, end, *scope_values),
         ).fetchall()]
         incomes = [] if movement_type == "Despesa" else [row_to_dict(row) for row in conn.execute(

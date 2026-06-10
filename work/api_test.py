@@ -79,6 +79,11 @@ def main():
             request("GET", "/api/users", token=normal_login["token"])
         except urllib.error.HTTPError as exc:
             blocked = exc.code == 403
+        category_blocked = False
+        try:
+            request("GET", "/api/categories/manage", token=normal_login["token"])
+        except urllib.error.HTTPError as exc:
+            category_blocked = exc.code == 403
         created_admin = request(
             "POST",
             "/api/users",
@@ -91,10 +96,10 @@ def main():
             },
             super_token,
         )
-        category = request("POST", "/api/categories", {"name": "Categoria Teste Seguro"}, super_token)
+        safe_category = request("POST", "/api/categories", {"name": "Categoria Teste Seguro"}, super_token)
         categories_before = request("GET", "/api/categories/manage", token=super_token)
-        request("PUT", f"/api/categories/{category['id']}", {"name": "Categoria Teste Seguro Editada", "active": "true"}, super_token)
-        request("DELETE", f"/api/categories/{category['id']}", token=super_token)
+        request("PUT", f"/api/categories/{safe_category['id']}", {"name": "Categoria Teste Seguro Editada", "active": "true"}, super_token)
+        request("DELETE", f"/api/categories/{safe_category['id']}", token=super_token)
         categories_after_delete = request("GET", "/api/categories/manage", token=super_token)
         expense = request(
             "POST",
@@ -155,24 +160,9 @@ def main():
         goals = request("GET", "/api/goals", token=normal_login["token"])
         category = request("POST", "/api/categories", {"name": "Categoria Teste"}, super_token)
         managed_categories = request("GET", "/api/categories/manage", token=super_token)
-        preview = request(
-            "POST",
-            "/api/import/preview",
-            {
-                "rows": [
-                    {"tipo": "despesa", "descricao_ou_nome": "Exame importado", "categoria": "Saúde", "valor": "150", "data": "2026-06-22", "status": "Pendente", "observacao": ""},
-                    {"tipo": "receita", "descricao_ou_nome": "Servico importado", "categoria": "Servico", "valor": "250", "data": "2026-06-23", "status": "Recebido", "observacao": ""},
-                    {"tipo": "meta", "descricao_ou_nome": "Viagem", "categoria": "", "valor": "5000", "data": "2027-02-01", "status": "Ativa", "observacao": "Importada"},
-                    {"tipo": "", "descricao_ou_nome": "", "categoria": "", "valor": "", "data": "", "status": "", "observacao": ""},
-                ]
-            },
-            normal_login["token"],
-        )
-        committed = request("POST", "/api/import/commit", {"rows": preview["valid"]}, normal_login["token"])
         admin_login = request("POST", "/api/login", {"username": "admin_criado", "password": "admin123"})
         admin_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=admin_login["token"])
         request("POST", f"/api/expenses/{expense['id']}/pay", {"payment_date": "2026-06-09"}, normal_login["token"])
-<<<<<<< HEAD
         template_bytes = request("GET", "/api/import/template", token=normal_login["token"])
         template_sheets = server.read_xlsx_workbook(template_bytes)
         import_workbook = server.build_xlsx(
@@ -207,9 +197,6 @@ def main():
         duplicate_commit = request("POST", "/api/import/commit", {"rows": preview["valid"]}, normal_login["token"])
         request("DELETE", f"/api/expenses/{expense['id']}", token=normal_login["token"])
         after_soft_delete_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
-=======
-        cancel = request("POST", f"/api/expenses/{installment['id']}/cancel-future", {}, normal_login["token"])
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
         normal_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
         normal_incomes = request("GET", "/api/incomes?month=6&year=2026", token=normal_login["token"])
         normal_goals = request("GET", "/api/goals", token=normal_login["token"])
@@ -245,8 +232,8 @@ def main():
         assert_true(normal_login["user"]["profile"] == "usuario", "cadastro publico nao criou usuario comum")
         assert_true(duplicate_blocked, "usuario duplicado nao foi bloqueado")
         assert_true(blocked, "usuario comum acessou menu/rota de usuarios")
-<<<<<<< HEAD
-        assert_true(any(item["id"] == category["id"] and item["active"] == 0 for item in categories_after_delete["categories"]), "categoria foi apagada em vez de desativada")
+        assert_true(category_blocked, "usuario comum acessou rota administrativa de categorias")
+        assert_true(any(item["id"] == safe_category["id"] and item["active"] == 0 for item in categories_after_delete["categories"]), "categoria foi apagada em vez de desativada")
         assert_true(any(item["name"] == "Categoria Teste Seguro" for item in categories_before["categories"]), "categoria nao foi criada/listada")
         assert_true(set(template_sheets.keys()) >= {"DESPESAS", "RECEITAS", "METAS", "PARCELADAS"}, "modelo XLSX nao possui as abas oficiais")
         assert_true(preview["errors"] == [] and len(preview["valid"]) == 4, "preview de importacao XLSX falhou")
@@ -258,17 +245,6 @@ def main():
         assert_true(any(item["description"] == "Compra parcelada importada (1/2)" for item in normal_expenses["expenses"]), "parcela importada nao apareceu para o usuario")
         assert_true(any(item["id"] == income["id"] for item in normal_incomes["incomes"]), "receita cadastrada nao apareceu para o usuario")
         assert_true(any(item["name"] == "Meta importada" for item in normal_goals["goals"]), "meta importada nao apareceu para o usuario")
-=======
-        assert_true(any(item["id"] == expense["id"] for item in normal_expenses["expenses"]), "conta cadastrada nao apareceu para o usuario")
-        assert_true(installment["installments"] == 10, "parcelamento nao gerou 10 parcelas")
-        assert_true(any(item["description"] == "Notebook (1/10)" for item in normal_expenses["expenses"]), "primeira parcela nao apareceu na listagem")
-        assert_true(cancel["cancelled"] >= 1, "cancelamento de parcelas futuras nao funcionou")
-        assert_true(any(item["id"] == income["id"] for item in normal_incomes["incomes"]), "receita cadastrada nao apareceu para o usuario")
-        assert_true(any(item["id"] == goal["id"] and item["current_amount"] == 1500 for item in goals["goals"]), "meta nao foi criada/atualizada")
-        assert_true(preview["errors"] == [] and len(preview["valid"]) == 3, "preview da importacao falhou")
-        assert_true(committed["imported"] == 3, "commit da importacao falhou")
-        assert_true(any(item["name"] == "Categoria Teste" for item in managed_categories["categories"]), "categoria administrativa nao foi criada/listada")
->>>>>>> a87cbe2db045c746578c31f2b05fd9f5b7e303ae
         assert_true(not admin_expenses["expenses"], "admin sem lancamentos viu contas de outro usuario")
         assert_true(not admin_incomes["incomes"], "admin sem lancamentos viu receitas de outro usuario")
         assert_true(any(item["description"] == "Despesa importada" for item in super_expenses["expenses"]), "superadmin nao viu todos os registros")
@@ -295,9 +271,7 @@ def main():
                     "normal_expenses_count": len(normal_expenses["expenses"]),
                     "normal_incomes_count": len(normal_incomes["incomes"]),
                     "installments_created": installment["installments"],
-                    "future_installments_cancelled": cancel["cancelled"],
                     "goals_count": len(goals["goals"]),
-                    "imported": committed["imported"],
                     "admin_expenses_count": len(admin_expenses["expenses"]),
                     "super_expenses_count": len(super_expenses["expenses"]),
                     "filtered_super_expenses_count": len(filtered_super_expenses["expenses"]),

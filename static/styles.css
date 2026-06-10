@@ -171,6 +171,21 @@ h3 { font-size: 18px; }
   margin-bottom: 12px;
   max-width: 520px;
 }
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.settings-tab-btn {
+  background: #eef2f6;
+  color: #526173;
+  font-weight: 800;
+}
+.settings-tab-btn.active {
+  background: var(--brand);
+  color: #fff;
+}
 .badge {
   background: #eef2f6;
   border-radius: 999px;
