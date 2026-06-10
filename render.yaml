@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: financeiro-pessoal
+    env: docker
+    plan: starter
+    autoDeploy: false
+    envVars:
+      - key: DATA_DIR
+        value: /app/data
+      - key: SUPERADMIN_PASSWORD
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+    disk:
+      name: financeiro-data
+      mountPath: /app/data
+      sizeGB: 1

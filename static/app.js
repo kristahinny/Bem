@@ -6,6 +6,9 @@ const state = {
   expenses: [],
   incomes: [],
   users: [],
+  goals: [],
+  importRows: [],
+  managedCategories: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -108,7 +111,7 @@ function setView(view) {
     view = "dashboard";
   }
   state.view = view;
-  const titles = { dashboard: "Dashboard", expenses: "Contas a pagar", incomes: "Receitas", reports: "Relatorios", users: "Usuarios", settings: "Senha" };
+  const titles = { dashboard: "Dashboard", expenses: "Contas a pagar", incomes: "Receitas", goals: "Metas", reports: "Relatorios", users: "Usuarios", settings: "Senha" };
   $("#viewTitle").textContent = titles[view];
   $$(".view").forEach((el) => el.classList.add("hidden"));
   $(`#${view}View`).classList.remove("hidden");
@@ -136,16 +139,54 @@ async function loadUserOptions() {
   }
 }
 
+async function loadManagedCategories() {
+  if (state.user?.profile !== "superadmin") return;
+  const data = await api("/api/categories/manage");
+  state.managedCategories = data.categories;
+  const target = $("#categoryList");
+  if (!target) return;
+  target.innerHTML = data.categories.map((category) => `
+    <div class="mini-item">
+      <strong>${escapeHtml(category.name)}</strong>
+      <button class="danger" onclick="deleteCategory(${category.id})">Excluir</button>
+    </div>
+  `).join("");
+}
+
 async function loadDashboard() {
   const data = await api(`/api/dashboard?${query()}`);
   $("#cardPending").textContent = money(data.cards.total_pending);
   $("#cardPaid").textContent = money(data.cards.total_paid);
   $("#cardIncome").textContent = money(data.cards.total_income);
+  $("#cardExpenses").textContent = money(data.cards.total_expenses);
+  $("#cardMonthBalance").textContent = money(data.cards.month_balance);
   $("#cardExpected").textContent = money(data.cards.expected_balance);
   $("#cardReal").textContent = money(data.cards.real_balance);
+  $("#cardGoals").textContent = money(data.cards.goals_total);
+  $("#cardFutureInstallments").textContent = money(data.cards.future_installments);
   $("#cardOverdue").textContent = data.cards.overdue_count;
+  $("#cardUpcoming").textContent = data.cards.upcoming_count;
   renderMiniList("#overdueList", data.overdue);
   renderMiniList("#upcomingList", data.upcoming);
+  await loadCharts();
+}
+
+async function loadCharts() {
+  const data = await api(`/api/charts?${query()}`);
+  renderBars("#chartIncomes", data.incomes, "income");
+  renderBars("#chartExpenses", data.expenses, "expense");
+  renderBars("#chartBalances", data.balances, "balance");
+  renderBars("#chartGoals", data.goals, "goal");
+}
+
+function renderBars(selector, values, cls) {
+  const target = $(selector);
+  if (!target) return;
+  const max = Math.max(...values.map((v) => Math.abs(Number(v))), 1);
+  target.innerHTML = values.map((value) => {
+    const height = Math.max((Math.abs(Number(value)) / max) * 120, 3);
+    return `<span class="bar ${cls}" style="height:${height}px" title="${money(value)}"></span>`;
+  }).join("");
 }
 
 function renderMiniList(selector, items) {
@@ -175,13 +216,15 @@ async function loadExpenses() {
       <td>${money(item.amount)}</td>
       <td>${fmtDate(item.due_date)}</td>
       <td><span class="pill ${item.status}">${item.status}</span></td>
+      <td>${item.installment_total ? `${item.installment_number}/${item.installment_total}` : "-"}</td>
       <td class="actions">
         ${item.status !== "Pago" ? `<button class="success" onclick="payExpense(${item.id})">Pagar</button>` : ""}
+        ${item.installment_group ? `<button class="danger" onclick="cancelFutureInstallments(${item.id})">Cancelar futuras</button>` : ""}
         <button class="edit" onclick="editExpense(${item.id})">Editar</button>
         <button class="danger" onclick="deleteExpense(${item.id})">Excluir</button>
       </td>
     </tr>
-  `).join("") || `<tr><td colspan="6">Nenhuma conta cadastrada.</td></tr>`;
+  `).join("") || `<tr><td colspan="7">Nenhuma conta cadastrada.</td></tr>`;
 }
 
 async function loadIncomes() {
@@ -212,6 +255,36 @@ async function loadReport() {
   $("#reportBalance").textContent = money(data.summary.final_balance);
   $("#paidReport").innerHTML = reportRows(data.paid_expenses, "due_date");
   $("#pendingReport").innerHTML = reportRows(data.pending_expenses, "due_date");
+  await loadCashflow();
+}
+
+async function loadCashflow() {
+  const data = await api(`/api/cashflow?${query()}`);
+  $("#cashflowTable").innerHTML = data.cashflow.map((row) => `
+    <tr><td>${row.month}</td><td>${money(row.incomes)}</td><td>${money(row.expenses)}</td><td>${money(row.goals)}</td><td>${money(row.balance)}</td></tr>
+  `).join("");
+}
+
+async function loadGoals() {
+  const data = await api(`/api/goals?${query()}`);
+  state.goals = data.goals;
+  $("#goalCount").textContent = data.goals.length;
+  $("#goalsList").innerHTML = data.goals.map((goal) => `
+    <article class="goal-item">
+      <div class="section-head">
+        <div><strong>${escapeHtml(goal.name)}</strong><br><span class="message">${escapeHtml(goal.description || "")}</span></div>
+        <span class="pill ${goal.status}">${goal.status}</span>
+      </div>
+      <div class="progress"><span style="width:${goal.percent_complete}%"></span></div>
+      <div>${money(goal.current_amount)} de ${money(goal.target_amount)} | Falta ${money(goal.remaining_amount)} | ${goal.percent_complete}% | Previsao: ${escapeHtml(goal.forecast)}</div>
+      <div class="actions">
+        <button class="edit" onclick="editGoal(${goal.id})">Editar</button>
+        <button class="success" onclick="changeGoalAmount(${goal.id}, 'add')">Adicionar valor</button>
+        <button class="edit" onclick="changeGoalAmount(${goal.id}, 'withdraw')">Retirar valor</button>
+        <button class="danger" onclick="deleteGoal(${goal.id})">Excluir</button>
+      </div>
+    </article>
+  `).join("") || `<p class="message">Nenhuma meta cadastrada.</p>`;
 }
 
 async function loadUsers() {
@@ -233,6 +306,7 @@ async function loadUsers() {
       </td>
     </tr>
   `).join("") || `<tr><td colspan="6">Nenhum usuario cadastrado.</td></tr>`;
+  await loadManagedCategories();
 }
 
 function reportRows(items, dateField) {
@@ -247,6 +321,7 @@ async function refreshAll() {
     if (state.view === "dashboard") await loadDashboard();
     if (state.view === "expenses") await loadExpenses();
     if (state.view === "incomes") await loadIncomes();
+    if (state.view === "goals") await loadGoals();
     if (state.view === "reports") await loadReport();
     if (state.view === "users") await loadUsers();
   } catch (error) {
@@ -350,6 +425,77 @@ async function saveUser(event) {
   await loadUserOptions();
 }
 
+async function saveGoal(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = formData(form);
+  const id = data.id;
+  delete data.id;
+  await api(id ? `/api/goals/${id}` : "/api/goals", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
+  clearForm(form);
+  toast("Meta salva.");
+  await loadGoals();
+}
+
+async function saveCategory(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = formData(form);
+  await api("/api/categories", { method: "POST", body: JSON.stringify(data) });
+  clearForm(form);
+  toast("Categoria adicionada.");
+  await loadCategories();
+  await loadManagedCategories();
+}
+
+function toggleInstallmentFields() {
+  const show = $("#isInstallment")?.value === "Sim";
+  $$(".installment-fields").forEach((field) => field.classList.toggle("hidden", !show));
+  const dueDate = $("#expenseForm")?.elements?.due_date?.value;
+  const firstDue = $("#expenseForm")?.elements?.first_due_date;
+  if (show && firstDue && !firstDue.value) firstDue.value = dueDate || "";
+}
+
+async function parseImportFile(file) {
+  const text = await file.text();
+  const lines = text.split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length < 2) return [];
+  const separator = lines[0].includes(";") ? ";" : ",";
+  const headers = lines[0].split(separator).map((header) => header.trim());
+  return lines.slice(1).map((line) => {
+    const values = line.split(separator);
+    return Object.fromEntries(headers.map((header, index) => [header, (values[index] || "").trim()]));
+  });
+}
+
+async function previewImport(event) {
+  const file = event.currentTarget.files?.[0];
+  if (!file) return;
+  state.importRows = await parseImportFile(file);
+  const data = await api("/api/import/preview", { method: "POST", body: JSON.stringify({ rows: state.importRows }) });
+  $("#importSummary").textContent = `${data.valid.length} linhas validas, ${data.errors.length} erros.`;
+  $("#importPreview").innerHTML = [
+    ...data.valid.slice(0, 10).map((row) => `<tr><td>OK</td><td>${escapeHtml(row.tipo)}</td><td>${escapeHtml(row.descricao_ou_nome)}</td><td>${money(row.valor)}</td></tr>`),
+    ...data.errors.map((err) => `<tr><td>Erro linha ${err.line}</td><td colspan="3">${escapeHtml(err.error)}</td></tr>`),
+  ].join("");
+}
+
+async function commitImport() {
+  if (!state.importRows.length) {
+    toast("Selecione uma planilha primeiro.");
+    return;
+  }
+  const payload = { rows: state.importRows };
+  if (state.user?.profile === "superadmin" && $("#filterUser")?.value) payload.user_id = $("#filterUser").value;
+  const data = await api("/api/import/commit", { method: "POST", body: JSON.stringify(payload) });
+  toast(`${data.imported} registros importados.`);
+  state.importRows = [];
+  if ($("#importFile")) $("#importFile").value = "";
+  $("#importSummary").textContent = "";
+  $("#importPreview").innerHTML = "";
+  await refreshAll();
+}
+
 async function registerAccount(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -398,6 +544,11 @@ window.editUser = (id) => {
   if (item) fillForm($("#userForm"), { ...item, active: item.active ? "true" : "false", password: "" });
 };
 
+window.editGoal = (id) => {
+  const item = state.goals.find((row) => row.id === id);
+  if (item) fillForm($("#goalForm"), item);
+};
+
 window.deleteExpense = async (id) => {
   if (!confirm("Excluir esta conta?")) return;
   await api(`/api/expenses/${id}`, { method: "DELETE" });
@@ -418,6 +569,37 @@ window.payExpense = async (id) => {
   await api(`/api/expenses/${id}/pay`, { method: "POST", body: JSON.stringify({ payment_date: paymentDate }) });
   toast("Conta marcada como paga.");
   await loadExpenses();
+};
+
+window.cancelFutureInstallments = async (id) => {
+  if (!confirm("Cancelar parcelas futuras nao pagas?")) return;
+  const data = await api(`/api/expenses/${id}/cancel-future`, { method: "POST", body: "{}" });
+  toast(`${data.cancelled} parcelas futuras canceladas.`);
+  await loadExpenses();
+};
+
+window.changeGoalAmount = async (id, action) => {
+  const label = action === "add" ? "Adicionar valor" : "Retirar valor";
+  const amount = prompt(`${label}:`);
+  if (!amount) return;
+  await api(`/api/goals/${id}/${action}`, { method: "POST", body: JSON.stringify({ amount }) });
+  toast("Meta atualizada.");
+  await loadGoals();
+};
+
+window.deleteGoal = async (id) => {
+  if (!confirm("Excluir esta meta?")) return;
+  await api(`/api/goals/${id}`, { method: "DELETE" });
+  toast("Meta excluida.");
+  await loadGoals();
+};
+
+window.deleteCategory = async (id) => {
+  if (!confirm("Excluir esta categoria?")) return;
+  await api(`/api/categories/${id}`, { method: "DELETE" });
+  toast("Categoria excluida.");
+  await loadCategories();
+  await loadManagedCategories();
 };
 
 window.changeUserPassword = async (id) => {
@@ -495,8 +677,12 @@ function bindEvents() {
   on("#logoutBtn", "click", () => logout(true));
   on("#expenseForm", "submit", saveExpense);
   on("#incomeForm", "submit", saveIncome);
+  on("#goalForm", "submit", saveGoal);
+  on("#categoryForm", "submit", saveCategory);
   on("#clearExpenseForm", "click", () => clearForm($("#expenseForm")));
   on("#clearIncomeForm", "click", () => clearForm($("#incomeForm")));
+  on("#clearGoalForm", "click", () => clearForm($("#goalForm")));
+  on("#isInstallment", "change", toggleInstallmentFields);
   on("#expenseStatus", "change", loadExpenses);
   on("#expenseCategory", "change", loadExpenses);
   on("#incomeStatus", "change", loadIncomes);
@@ -504,6 +690,11 @@ function bindEvents() {
   on("#filterUser", "change", refreshAll);
   on("#reportType", "change", loadReport);
   on("#exportReport", "click", exportReport);
+  on("#downloadTemplate", "click", () => {
+    window.location.href = "/api/import/template";
+  });
+  on("#importFile", "change", previewImport);
+  on("#commitImport", "click", commitImport);
   on("#userForm", "submit", saveUser);
   on("#clearUserForm", "click", () => clearForm($("#userForm")));
   on("#passwordForm", "submit", async (event) => {
