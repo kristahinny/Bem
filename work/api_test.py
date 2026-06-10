@@ -1,8 +1,10 @@
 import json
 import os
+import shutil
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +32,7 @@ def request(method, path, data=None, token=None):
 
 
 def main():
+    shutil.rmtree(ROOT / "work" / "test-data", ignore_errors=True)
     server.init_db()
     httpd = ThreadingHTTPServer(("127.0.0.1", 8765), server.FinanceHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -38,6 +41,18 @@ def main():
     try:
         login = request("POST", "/api/login", {"username": "admin", "password": "admin123"})
         token = login["token"]
+        created_user = request(
+            "POST",
+            "/api/users",
+            {"username": "teste_usuario", "password": "usuario123", "profile": "usuario", "active": "true"},
+            token,
+        )
+        normal_login = request("POST", "/api/login", {"username": "teste_usuario", "password": "usuario123"})
+        blocked = False
+        try:
+            request("GET", "/api/users", token=normal_login["token"])
+        except urllib.error.HTTPError as exc:
+            blocked = exc.code == 403
         expense = request(
             "POST",
             "/api/expenses",
@@ -73,6 +88,10 @@ def main():
             json.dumps(
                 {
                     "login": login["user"]["username"],
+                    "admin_profile": login["user"]["profile"],
+                    "created_user_id": created_user["id"],
+                    "normal_login": normal_login["user"]["username"],
+                    "normal_user_blocked_from_users": blocked,
                     "expense_id": expense["id"],
                     "income_id": income["id"],
                     "total_paid": dashboard["cards"]["total_paid"],

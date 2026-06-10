@@ -1,9 +1,11 @@
 const state = {
   token: localStorage.getItem("finance_token"),
+  user: null,
   view: "dashboard",
   categories: [],
   expenses: [],
   incomes: [],
+  users: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -70,6 +72,8 @@ function query(extra = {}) {
 function showApp() {
   $("#loginScreen").classList.add("hidden");
   $("#appShell").classList.remove("hidden");
+  const isAdmin = state.user?.profile === "admin";
+  $$(".admin-only").forEach((el) => el.classList.toggle("hidden", !isAdmin));
 }
 
 function showLogin() {
@@ -78,8 +82,12 @@ function showLogin() {
 }
 
 function setView(view) {
+  if (view === "users" && state.user?.profile !== "admin") {
+    toast("Acesso permitido somente para administradores.");
+    view = "dashboard";
+  }
   state.view = view;
-  const titles = { dashboard: "Dashboard", expenses: "Contas a pagar", incomes: "Receitas", reports: "Relatorios", settings: "Senha" };
+  const titles = { dashboard: "Dashboard", expenses: "Contas a pagar", incomes: "Receitas", reports: "Relatorios", users: "Usuarios", settings: "Senha" };
   $("#viewTitle").textContent = titles[view];
   $$(".view").forEach((el) => el.classList.add("hidden"));
   $(`#${view}View`).classList.remove("hidden");
@@ -174,6 +182,26 @@ async function loadReport() {
   $("#pendingReport").innerHTML = reportRows(data.pending_expenses, "due_date");
 }
 
+async function loadUsers() {
+  const data = await api("/api/users");
+  state.users = data.users;
+  $("#userCount").textContent = data.users.length;
+  $("#usersTable").innerHTML = data.users.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.username)}</td>
+      <td><span class="pill ${item.profile}">${item.profile}</span></td>
+      <td><span class="pill ${item.active ? "Recebido" : "Vencido"}">${item.active ? "Ativo" : "Inativo"}</span></td>
+      <td>${item.created_at ? fmtDate(item.created_at.slice(0, 10)) : ""}</td>
+      <td class="actions">
+        <button class="edit" onclick="editUser(${item.id})">Editar</button>
+        <button class="edit" onclick="changeUserPassword(${item.id})">Senha</button>
+        ${item.username !== "admin" ? `<button class="success" onclick="toggleUser(${item.id})">${item.active ? "Desativar" : "Ativar"}</button>` : ""}
+        ${item.username !== "admin" ? `<button class="danger" onclick="deleteUser(${item.id})">Excluir</button>` : ""}
+      </td>
+    </tr>
+  `).join("") || `<tr><td colspan="5">Nenhum usuario cadastrado.</td></tr>`;
+}
+
 function reportRows(items, dateField) {
   return items.map((item) => `
     <tr><td>${escapeHtml(item.description)}</td><td>${fmtDate(item[dateField])}</td><td>${money(item.amount)}</td><td><span class="pill ${item.status}">${item.status}</span></td></tr>
@@ -187,6 +215,7 @@ async function refreshAll() {
     if (state.view === "expenses") await loadExpenses();
     if (state.view === "incomes") await loadIncomes();
     if (state.view === "reports") await loadReport();
+    if (state.view === "users") await loadUsers();
   } catch (error) {
     toast(error.message);
   }
@@ -231,6 +260,19 @@ async function saveIncome(event) {
   await loadIncomes();
 }
 
+async function saveUser(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = formData(form);
+  const id = data.id;
+  delete data.id;
+  if (id && !data.password) delete data.password;
+  await api(id ? `/api/users/${id}` : "/api/users", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
+  clearForm(form);
+  toast("Usuario salvo.");
+  await loadUsers();
+}
+
 window.editExpense = (id) => {
   const item = state.expenses.find((row) => row.id === id);
   if (item) fillForm($("#expenseForm"), item);
@@ -239,6 +281,11 @@ window.editExpense = (id) => {
 window.editIncome = (id) => {
   const item = state.incomes.find((row) => row.id === id);
   if (item) fillForm($("#incomeForm"), item);
+};
+
+window.editUser = (id) => {
+  const item = state.users.find((row) => row.id === id);
+  if (item) fillForm($("#userForm"), { ...item, active: item.active ? "true" : "false", password: "" });
 };
 
 window.deleteExpense = async (id) => {
@@ -263,9 +310,30 @@ window.payExpense = async (id) => {
   await loadExpenses();
 };
 
+window.changeUserPassword = async (id) => {
+  const password = prompt("Nova senha do usuario:");
+  if (!password) return;
+  await api(`/api/users/${id}/password`, { method: "POST", body: JSON.stringify({ password }) });
+  toast("Senha alterada.");
+};
+
+window.toggleUser = async (id) => {
+  await api(`/api/users/${id}/toggle`, { method: "POST", body: "{}" });
+  toast("Status do usuario atualizado.");
+  await loadUsers();
+};
+
+window.deleteUser = async (id) => {
+  if (!confirm("Excluir este usuario?")) return;
+  await api(`/api/users/${id}`, { method: "DELETE" });
+  toast("Usuario excluido.");
+  await loadUsers();
+};
+
 function logout(callApi = true) {
   if (callApi && state.token) api("/api/logout", { method: "POST", body: "{}" }).catch(() => {});
   state.token = null;
+  state.user = null;
   localStorage.removeItem("finance_token");
   showLogin();
 }
@@ -298,6 +366,7 @@ function bindEvents() {
     try {
       const data = await api("/api/login", { method: "POST", body: JSON.stringify(formData(event.currentTarget)) });
       state.token = data.token;
+      state.user = data.user;
       localStorage.setItem("finance_token", state.token);
       showApp();
       await loadCategories();
@@ -318,6 +387,8 @@ function bindEvents() {
   $("#incomeCategory").addEventListener("change", loadIncomes);
   $("#reportType").addEventListener("change", loadReport);
   $("#exportReport").addEventListener("click", exportReport);
+  $("#userForm").addEventListener("submit", saveUser);
+  $("#clearUserForm").addEventListener("click", () => clearForm($("#userForm")));
   $("#passwordForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     $("#passwordMsg").textContent = "";
@@ -336,7 +407,8 @@ async function boot() {
   bindEvents();
   if (state.token) {
     try {
-      await api("/api/me");
+      const data = await api("/api/me");
+      state.user = data.user;
       showApp();
       await loadCategories();
       setView("dashboard");

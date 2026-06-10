@@ -33,6 +33,7 @@
         <button data-view="expenses" class="nav-btn">Contas a pagar</button>
         <button data-view="incomes" class="nav-btn">Receitas</button>
         <button data-view="reports" class="nav-btn">Relatorios</button>
+        <button data-view="users" class="nav-btn admin-only hidden">Usuarios</button>
         <button data-view="settings" class="nav-btn">Senha</button>
       </nav>
       <button id="logoutBtn" class="ghost">Sair</button>
@@ -143,6 +144,29 @@
         <div class="two-columns">
           <section class="panel"><h3>Contas pagas</h3><div class="table-wrap"><table><tbody id="paidReport"></tbody></table></div></section>
           <section class="panel"><h3>Contas pendentes</h3><div class="table-wrap"><table><tbody id="pendingReport"></tbody></table></div></section>
+        </div>
+      </section>
+
+      <section id="usersView" class="view hidden">
+        <div class="panel">
+          <div class="section-head"><h3>Usuario</h3><button id="clearUserForm" class="ghost">Limpar</button></div>
+          <form id="userForm" class="grid-form">
+            <input type="hidden" name="id">
+            <label>Usuario<input name="username" autocomplete="off" required></label>
+            <label>Perfil<select name="profile"><option value="usuario">usuario</option><option value="admin">admin</option></select></label>
+            <label>Status<select name="active"><option value="true">Ativo</option><option value="false">Inativo</option></select></label>
+            <label>Senha<input name="password" type="password" minlength="6" autocomplete="new-password"></label>
+            <button class="primary" type="submit">Salvar usuario</button>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="section-head"><h3>Usuarios cadastrados</h3><div id="userCount" class="badge">0</div></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Usuario</th><th>Perfil</th><th>Status</th><th>Criado em</th><th>Acoes</th></tr></thead>
+              <tbody id="usersTable"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 

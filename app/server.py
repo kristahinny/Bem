@@ -60,6 +60,8 @@ def init_db():
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 salt TEXT NOT NULL,
+                profile TEXT NOT NULL DEFAULT 'usuario',
+                active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
             );
 
@@ -102,6 +104,7 @@ def init_db():
             );
             """
         )
+        ensure_user_columns(conn)
         for category in DEFAULT_CATEGORIES:
             conn.execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (category,))
 
@@ -109,9 +112,19 @@ def init_db():
         if not user:
             salt, password_hash = hash_password("admin123")
             conn.execute(
-                "INSERT INTO users (username, password_hash, salt, created_at) VALUES (?, ?, ?, ?)",
-                ("admin", password_hash, salt, now()),
+                "INSERT INTO users (username, password_hash, salt, profile, active, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("admin", password_hash, salt, "admin", 1, now()),
             )
+        else:
+            conn.execute("UPDATE users SET profile = 'admin', active = 1 WHERE username = 'admin'")
+
+
+def ensure_user_columns(conn):
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "profile" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN profile TEXT NOT NULL DEFAULT 'usuario'")
+    if "active" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
 
 
 def now():
@@ -141,6 +154,19 @@ def parse_body(handler):
 
 def row_to_dict(row):
     return dict(row) if row else None
+
+
+def public_user(row):
+    data = row_to_dict(row)
+    if not data:
+        return None
+    return {
+        "id": data["id"],
+        "username": data["username"],
+        "profile": data.get("profile", "usuario"),
+        "active": bool(data.get("active", 1)),
+        "created_at": data.get("created_at"),
+    }
 
 
 def clean_money(value):
@@ -239,6 +265,22 @@ def income_payload(data, partial=False):
     }
 
 
+def user_payload(data, creating=False):
+    fields = ["username", "profile"]
+    if creating:
+        fields.append("password")
+    require_fields(data, fields)
+    username = str(data.get("username", "")).strip()
+    profile = str(data.get("profile", "usuario")).strip()
+    if profile not in ("admin", "usuario"):
+        raise ValueError("Perfil invalido")
+    active = 1 if str(data.get("active", "true")).lower() in ("1", "true", "sim", "on") else 0
+    password = str(data.get("password", ""))
+    if creating and len(password) < 6:
+        raise ValueError("A senha deve ter pelo menos 6 caracteres")
+    return {"username": username, "profile": profile, "active": active, "password": password}
+
+
 class FinanceHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
@@ -268,19 +310,28 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         with connect() as conn:
             row = conn.execute(
                 """
-                SELECT users.id, users.username
+                SELECT users.id, users.username, users.profile, users.active, users.created_at
                 FROM sessions
                 JOIN users ON users.id = sessions.user_id
-                WHERE sessions.token = ? AND sessions.expires_at > ?
+                WHERE sessions.token = ? AND sessions.expires_at > ? AND users.active = 1
                 """,
                 (token, now()),
             ).fetchone()
-            return row_to_dict(row)
+            return public_user(row)
 
     def require_user(self):
         user = self.current_user()
         if not user:
             self.send_error_json("Login necessario", HTTPStatus.UNAUTHORIZED)
+            return None
+        return user
+
+    def require_admin(self):
+        user = self.require_user()
+        if not user:
+            return None
+        if user["profile"] != "admin":
+            self.send_error_json("Acesso permitido somente para administradores", HTTPStatus.FORBIDDEN)
             return None
         return user
 
@@ -293,6 +344,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 if path == "/api/me":
                     user = self.require_user()
                     return user and self.send_json({"user": user})
+                if path == "/api/users":
+                    return self.handle_list_users()
                 if path == "/api/categories":
                     return self.handle_categories()
                 if path == "/api/dashboard":
@@ -320,6 +373,14 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 return self.handle_logout()
             if path == "/api/change-password":
                 return self.handle_change_password(data)
+            if path == "/api/users":
+                return self.handle_create_user(data)
+            if path.startswith("/api/users/") and path.endswith("/password"):
+                user_id = int(path.split("/")[3])
+                return self.handle_admin_change_password(user_id, data)
+            if path.startswith("/api/users/") and path.endswith("/toggle"):
+                user_id = int(path.split("/")[3])
+                return self.handle_toggle_user(user_id)
             if self.require_user() is None:
                 return
             if path == "/api/expenses":
@@ -341,6 +402,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             if self.require_user() is None:
                 return
             data = parse_body(self)
+            if path.startswith("/api/users/"):
+                return self.handle_update_user(int(path.split("/")[3]), data)
             if path.startswith("/api/expenses/"):
                 return self.handle_update_expense(int(path.split("/")[3]), data)
             if path.startswith("/api/incomes/"):
@@ -356,6 +419,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         try:
             if self.require_user() is None:
                 return
+            if path.startswith("/api/users/"):
+                return self.handle_delete_user(int(path.split("/")[3]))
             if path.startswith("/api/expenses/"):
                 return self.handle_delete("expenses", int(path.split("/")[3]))
             if path.startswith("/api/incomes/"):
@@ -369,7 +434,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         password = str(data.get("password", ""))
         with connect() as conn:
             user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-            if not user or not verify_password(password, user["salt"], user["password_hash"]):
+            if not user or not user["active"] or not verify_password(password, user["salt"], user["password_hash"]):
                 return self.send_error_json("Usuario ou senha invalidos", HTTPStatus.UNAUTHORIZED)
             token = secrets.token_urlsafe(32)
             expires_at = (datetime.now() + timedelta(hours=SESSION_HOURS)).replace(microsecond=0).isoformat()
@@ -377,12 +442,111 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
                 (token, user["id"], expires_at),
             )
-            self.send_json({"token": token, "user": {"id": user["id"], "username": user["username"]}})
+            self.send_json({"token": token, "user": public_user(user)})
 
     def handle_logout(self):
         token = self.headers.get("Authorization", "").replace("Bearer ", "").strip()
         with connect() as conn:
             conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        self.send_json({"ok": True})
+
+    def handle_list_users(self):
+        if self.require_admin() is None:
+            return
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT id, username, profile, active, created_at FROM users ORDER BY username"
+            ).fetchall()
+        self.send_json({"users": [public_user(row) for row in rows]})
+
+    def handle_create_user(self, data):
+        if self.require_admin() is None:
+            return
+        payload = user_payload(data, creating=True)
+        salt, password_hash = hash_password(payload["password"])
+        try:
+            with connect() as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO users (username, password_hash, salt, profile, active, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        payload["username"],
+                        password_hash,
+                        salt,
+                        payload["profile"],
+                        payload["active"],
+                        now(),
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            return self.send_error_json("Usuario ja existe")
+        self.send_json({"id": cur.lastrowid}, HTTPStatus.CREATED)
+
+    def handle_update_user(self, user_id, data):
+        if self.require_admin() is None:
+            return
+        payload = user_payload(data)
+        with connect() as conn:
+            existing = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not existing:
+                return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
+            if existing["username"] == "admin" and payload["username"] != "admin":
+                return self.send_error_json("O usuario admin principal nao pode ser renomeado")
+            profile = "admin" if existing["username"] == "admin" else payload["profile"]
+            active = 1 if existing["username"] == "admin" else payload["active"]
+            try:
+                conn.execute(
+                    "UPDATE users SET username = ?, profile = ?, active = ? WHERE id = ?",
+                    (payload["username"], profile, active, user_id),
+                )
+            except sqlite3.IntegrityError:
+                return self.send_error_json("Usuario ja existe")
+        self.send_json({"ok": True})
+
+    def handle_admin_change_password(self, user_id, data):
+        if self.require_admin() is None:
+            return
+        new_password = str(data.get("password", ""))
+        if len(new_password) < 6:
+            raise ValueError("A senha deve ter pelo menos 6 caracteres")
+        salt, password_hash = hash_password(new_password)
+        with connect() as conn:
+            cur = conn.execute(
+                "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
+                (password_hash, salt, user_id),
+            )
+        if cur.rowcount == 0:
+            return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
+        self.send_json({"ok": True})
+
+    def handle_toggle_user(self, user_id):
+        if self.require_admin() is None:
+            return
+        with connect() as conn:
+            user = conn.execute("SELECT username, active FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
+            if user["username"] == "admin":
+                return self.send_error_json("O usuario admin principal nao pode ser desativado")
+            new_active = 0 if user["active"] else 1
+            conn.execute("UPDATE users SET active = ? WHERE id = ?", (new_active, user_id))
+            if not new_active:
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        self.send_json({"ok": True, "active": bool(new_active)})
+
+    def handle_delete_user(self, user_id):
+        if self.require_admin() is None:
+            return
+        with connect() as conn:
+            user = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
+            if user["username"] == "admin":
+                return self.send_error_json("O usuario admin principal nao pode ser excluido")
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         self.send_json({"ok": True})
 
     def handle_change_password(self, data):
