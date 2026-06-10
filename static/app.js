@@ -1,0 +1,349 @@
+const state = {
+  token: localStorage.getItem("finance_token"),
+  view: "dashboard",
+  categories: [],
+  expenses: [],
+  incomes: [],
+};
+
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+const money = (value) => Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const fmtDate = (value) => value ? value.split("-").reverse().join("/") : "";
+
+const months = [
+  "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho",
+  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
+];
+
+function authHeaders() {
+  return state.token ? { Authorization: `Bearer ${state.token}` } : {};
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+      ...(options.headers || {}),
+    },
+  });
+  if (response.status === 401) {
+    logout(false);
+    throw new Error("Login necessario");
+  }
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: "Erro inesperado" }));
+    throw new Error(err.error || "Erro inesperado");
+  }
+  if (response.headers.get("content-type")?.includes("application/json")) return response.json();
+  return response;
+}
+
+function toast(message) {
+  const box = $("#toast");
+  box.textContent = message;
+  box.classList.remove("hidden");
+  setTimeout(() => box.classList.add("hidden"), 2800);
+}
+
+function setupPeriod() {
+  const now = new Date();
+  $("#filterMonth").innerHTML = months.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("");
+  $("#filterMonth").value = now.getMonth() + 1;
+  $("#filterYear").value = now.getFullYear();
+  $("#filterMonth").addEventListener("change", refreshAll);
+  $("#filterYear").addEventListener("change", refreshAll);
+}
+
+function query(extra = {}) {
+  const params = new URLSearchParams({
+    month: $("#filterMonth").value,
+    year: $("#filterYear").value,
+    ...extra,
+  });
+  Object.entries(extra).forEach(([k, v]) => { if (!v) params.delete(k); });
+  return params.toString();
+}
+
+function showApp() {
+  $("#loginScreen").classList.add("hidden");
+  $("#appShell").classList.remove("hidden");
+}
+
+function showLogin() {
+  $("#loginScreen").classList.remove("hidden");
+  $("#appShell").classList.add("hidden");
+}
+
+function setView(view) {
+  state.view = view;
+  const titles = { dashboard: "Dashboard", expenses: "Contas a pagar", incomes: "Receitas", reports: "Relatorios", settings: "Senha" };
+  $("#viewTitle").textContent = titles[view];
+  $$(".view").forEach((el) => el.classList.add("hidden"));
+  $(`#${view}View`).classList.remove("hidden");
+  $$(".nav-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view));
+  refreshAll();
+}
+
+async function loadCategories() {
+  const data = await api("/api/categories");
+  state.categories = data.categories;
+  const opts = data.categories.map((c) => `<option>${c}</option>`).join("");
+  $$('select[name="category"]').forEach((select) => select.innerHTML = opts);
+  $("#expenseCategory").innerHTML = `<option value="">Todas categorias</option>${opts}`;
+  $("#incomeCategory").innerHTML = `<option value="">Todas categorias</option>${opts}`;
+}
+
+async function loadDashboard() {
+  const data = await api(`/api/dashboard?${query()}`);
+  $("#cardPending").textContent = money(data.cards.total_pending);
+  $("#cardPaid").textContent = money(data.cards.total_paid);
+  $("#cardIncome").textContent = money(data.cards.total_income);
+  $("#cardExpected").textContent = money(data.cards.expected_balance);
+  $("#cardReal").textContent = money(data.cards.real_balance);
+  $("#cardOverdue").textContent = data.cards.overdue_count;
+  renderMiniList("#overdueList", data.overdue);
+  renderMiniList("#upcomingList", data.upcoming);
+}
+
+function renderMiniList(selector, items) {
+  const target = $(selector);
+  if (!items.length) {
+    target.innerHTML = `<p class="message">Nenhum registro encontrado.</p>`;
+    return;
+  }
+  target.innerHTML = items.map((item) => `
+    <div class="mini-item">
+      <div><strong>${escapeHtml(item.description)}</strong><br><span>${escapeHtml(item.category)} - ${fmtDate(item.due_date)}</span></div>
+      <strong>${money(item.amount)}</strong>
+    </div>
+  `).join("");
+}
+
+async function loadExpenses() {
+  const status = $("#expenseStatus").value;
+  const category = $("#expenseCategory").value;
+  const data = await api(`/api/expenses?${query({ status, category })}`);
+  state.expenses = data.expenses;
+  $("#expenseCount").textContent = data.expenses.length;
+  $("#expensesTable").innerHTML = data.expenses.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.description)}</td>
+      <td>${escapeHtml(item.category)}</td>
+      <td>${money(item.amount)}</td>
+      <td>${fmtDate(item.due_date)}</td>
+      <td><span class="pill ${item.status}">${item.status}</span></td>
+      <td class="actions">
+        ${item.status !== "Pago" ? `<button class="success" onclick="payExpense(${item.id})">Pagar</button>` : ""}
+        <button class="edit" onclick="editExpense(${item.id})">Editar</button>
+        <button class="danger" onclick="deleteExpense(${item.id})">Excluir</button>
+      </td>
+    </tr>
+  `).join("") || `<tr><td colspan="6">Nenhuma conta cadastrada.</td></tr>`;
+}
+
+async function loadIncomes() {
+  const status = $("#incomeStatus").value;
+  const category = $("#incomeCategory").value;
+  const data = await api(`/api/incomes?${query({ status, category })}`);
+  state.incomes = data.incomes;
+  $("#incomeCount").textContent = data.incomes.length;
+  $("#incomesTable").innerHTML = data.incomes.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.description)}</td>
+      <td>${escapeHtml(item.category)}</td>
+      <td>${money(item.amount)}</td>
+      <td>${fmtDate(item.receipt_date)}</td>
+      <td><span class="pill ${item.status}">${item.status}</span></td>
+      <td class="actions">
+        <button class="edit" onclick="editIncome(${item.id})">Editar</button>
+        <button class="danger" onclick="deleteIncome(${item.id})">Excluir</button>
+      </td>
+    </tr>
+  `).join("") || `<tr><td colspan="6">Nenhuma receita cadastrada.</td></tr>`;
+}
+
+async function loadReport() {
+  const data = await api(`/api/report?${query({ type: $("#reportType").value })}`);
+  $("#reportIncome").textContent = money(data.summary.total_income);
+  $("#reportExpense").textContent = money(data.summary.total_expense);
+  $("#reportBalance").textContent = money(data.summary.final_balance);
+  $("#paidReport").innerHTML = reportRows(data.paid_expenses, "due_date");
+  $("#pendingReport").innerHTML = reportRows(data.pending_expenses, "due_date");
+}
+
+function reportRows(items, dateField) {
+  return items.map((item) => `
+    <tr><td>${escapeHtml(item.description)}</td><td>${fmtDate(item[dateField])}</td><td>${money(item.amount)}</td><td><span class="pill ${item.status}">${item.status}</span></td></tr>
+  `).join("") || `<tr><td>Nenhum registro.</td></tr>`;
+}
+
+async function refreshAll() {
+  if (!state.token) return;
+  try {
+    if (state.view === "dashboard") await loadDashboard();
+    if (state.view === "expenses") await loadExpenses();
+    if (state.view === "incomes") await loadIncomes();
+    if (state.view === "reports") await loadReport();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function formData(form) {
+  return Object.fromEntries(new FormData(form).entries());
+}
+
+function fillForm(form, item) {
+  Object.entries(item).forEach(([key, value]) => {
+    if (form.elements[key]) form.elements[key].value = value ?? "";
+  });
+}
+
+function clearForm(form) {
+  form.reset();
+  if (form.elements.id) form.elements.id.value = "";
+}
+
+async function saveExpense(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = formData(form);
+  const id = data.id;
+  delete data.id;
+  await api(id ? `/api/expenses/${id}` : "/api/expenses", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
+  clearForm(form);
+  toast("Conta salva.");
+  await loadExpenses();
+}
+
+async function saveIncome(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = formData(form);
+  const id = data.id;
+  delete data.id;
+  await api(id ? `/api/incomes/${id}` : "/api/incomes", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
+  clearForm(form);
+  toast("Receita salva.");
+  await loadIncomes();
+}
+
+window.editExpense = (id) => {
+  const item = state.expenses.find((row) => row.id === id);
+  if (item) fillForm($("#expenseForm"), item);
+};
+
+window.editIncome = (id) => {
+  const item = state.incomes.find((row) => row.id === id);
+  if (item) fillForm($("#incomeForm"), item);
+};
+
+window.deleteExpense = async (id) => {
+  if (!confirm("Excluir esta conta?")) return;
+  await api(`/api/expenses/${id}`, { method: "DELETE" });
+  toast("Conta excluida.");
+  await loadExpenses();
+};
+
+window.deleteIncome = async (id) => {
+  if (!confirm("Excluir esta receita?")) return;
+  await api(`/api/incomes/${id}`, { method: "DELETE" });
+  toast("Receita excluida.");
+  await loadIncomes();
+};
+
+window.payExpense = async (id) => {
+  const paymentDate = prompt("Data de pagamento (AAAA-MM-DD):", new Date().toISOString().slice(0, 10));
+  if (!paymentDate) return;
+  await api(`/api/expenses/${id}/pay`, { method: "POST", body: JSON.stringify({ payment_date: paymentDate }) });
+  toast("Conta marcada como paga.");
+  await loadExpenses();
+};
+
+function logout(callApi = true) {
+  if (callApi && state.token) api("/api/logout", { method: "POST", body: "{}" }).catch(() => {});
+  state.token = null;
+  localStorage.removeItem("finance_token");
+  showLogin();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+  }[char]));
+}
+
+async function exportReport() {
+  const response = await fetch(`/api/report/export?${query({ type: $("#reportType").value })}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error("Falha ao exportar relatorio");
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "relatorio-financeiro.csv";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  toast("Relatorio exportado.");
+}
+
+function bindEvents() {
+  $("#loginForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    $("#loginMsg").textContent = "";
+    try {
+      const data = await api("/api/login", { method: "POST", body: JSON.stringify(formData(event.currentTarget)) });
+      state.token = data.token;
+      localStorage.setItem("finance_token", state.token);
+      showApp();
+      await loadCategories();
+      setView("dashboard");
+    } catch (error) {
+      $("#loginMsg").textContent = error.message;
+    }
+  });
+  $$(".nav-btn").forEach((btn) => btn.addEventListener("click", () => setView(btn.dataset.view)));
+  $("#logoutBtn").addEventListener("click", () => logout(true));
+  $("#expenseForm").addEventListener("submit", saveExpense);
+  $("#incomeForm").addEventListener("submit", saveIncome);
+  $("#clearExpenseForm").addEventListener("click", () => clearForm($("#expenseForm")));
+  $("#clearIncomeForm").addEventListener("click", () => clearForm($("#incomeForm")));
+  $("#expenseStatus").addEventListener("change", loadExpenses);
+  $("#expenseCategory").addEventListener("change", loadExpenses);
+  $("#incomeStatus").addEventListener("change", loadIncomes);
+  $("#incomeCategory").addEventListener("change", loadIncomes);
+  $("#reportType").addEventListener("change", loadReport);
+  $("#exportReport").addEventListener("click", exportReport);
+  $("#passwordForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    $("#passwordMsg").textContent = "";
+    try {
+      await api("/api/change-password", { method: "POST", body: JSON.stringify(formData(event.currentTarget)) });
+      event.currentTarget.reset();
+      $("#passwordMsg").textContent = "Senha alterada com sucesso.";
+    } catch (error) {
+      $("#passwordMsg").textContent = error.message;
+    }
+  });
+}
+
+async function boot() {
+  setupPeriod();
+  bindEvents();
+  if (state.token) {
+    try {
+      await api("/api/me");
+      showApp();
+      await loadCategories();
+      setView("dashboard");
+    } catch {
+      logout(false);
+    }
+  }
+}
+
+boot();

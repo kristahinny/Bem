@@ -1,0 +1,15 @@
+services:
+  financeiro:
+    build: .
+    container_name: financeiro-pessoal
+    ports:
+      - "8000:8000"
+    environment:
+      DATA_DIR: /app/data
+      SECRET_KEY: altere-esta-chave
+    volumes:
+      - financeiro_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  financeiro_data:

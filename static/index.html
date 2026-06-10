@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Financeiro Pessoal</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="loginScreen" class="login-screen">
+    <section class="login-box">
+      <div>
+        <p class="eyebrow">Controle pessoal</p>
+        <h1>Financeiro</h1>
+      </div>
+      <form id="loginForm" class="form-stack">
+        <label>Usuario<input name="username" value="admin" autocomplete="username" required></label>
+        <label>Senha<input name="password" type="password" value="admin123" autocomplete="current-password" required></label>
+        <button class="primary" type="submit">Entrar</button>
+        <p id="loginMsg" class="message"></p>
+      </form>
+    </section>
+  </main>
+
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <span>FP</span>
+        <strong>Financeiro</strong>
+      </div>
+      <nav>
+        <button data-view="dashboard" class="nav-btn active">Dashboard</button>
+        <button data-view="expenses" class="nav-btn">Contas a pagar</button>
+        <button data-view="incomes" class="nav-btn">Receitas</button>
+        <button data-view="reports" class="nav-btn">Relatorios</button>
+        <button data-view="settings" class="nav-btn">Senha</button>
+      </nav>
+      <button id="logoutBtn" class="ghost">Sair</button>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Bem-vindo</p>
+          <h2 id="viewTitle">Dashboard</h2>
+        </div>
+        <div class="period-picker">
+          <select id="filterMonth"></select>
+          <input id="filterYear" type="number" min="2000" max="2100">
+        </div>
+      </header>
+
+      <section id="dashboardView" class="view">
+        <div class="cards">
+          <article class="stat expense"><span>A pagar no mes</span><strong id="cardPending">R$ 0,00</strong></article>
+          <article class="stat paid"><span>Pagas no mes</span><strong id="cardPaid">R$ 0,00</strong></article>
+          <article class="stat income"><span>Receitas no mes</span><strong id="cardIncome">R$ 0,00</strong></article>
+          <article class="stat balance"><span>Saldo previsto</span><strong id="cardExpected">R$ 0,00</strong></article>
+          <article class="stat balance-real"><span>Saldo real</span><strong id="cardReal">R$ 0,00</strong></article>
+          <article class="stat overdue"><span>Contas vencidas</span><strong id="cardOverdue">0</strong></article>
+        </div>
+        <div class="two-columns">
+          <section class="panel">
+            <h3>Contas vencidas</h3>
+            <div id="overdueList" class="mini-list"></div>
+          </section>
+          <section class="panel">
+            <h3>Proximas contas</h3>
+            <div id="upcomingList" class="mini-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="expensesView" class="view hidden">
+        <div class="panel">
+          <div class="section-head"><h3>Conta a pagar</h3><button id="clearExpenseForm" class="ghost">Limpar</button></div>
+          <form id="expenseForm" class="grid-form">
+            <input type="hidden" name="id">
+            <label>Descricao<input name="description" required></label>
+            <label>Categoria<select name="category" required></select></label>
+            <label>Valor<input name="amount" type="number" step="0.01" min="0" required></label>
+            <label>Vencimento<input name="due_date" type="date" required></label>
+            <label>Status<select name="status"><option>Pendente</option><option>Pago</option><option>Vencido</option></select></label>
+            <label>Forma de pagamento<input name="payment_method"></label>
+            <label>Data de pagamento<input name="payment_date" type="date"></label>
+            <label class="wide">Observacao<textarea name="notes" rows="2"></textarea></label>
+            <button class="primary" type="submit">Salvar conta</button>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="section-head"><h3>Contas cadastradas</h3><div id="expenseCount" class="badge">0</div></div>
+          <div class="filters">
+            <select id="expenseStatus"><option value="">Todos os status</option><option>Pendente</option><option>Pago</option><option>Vencido</option></select>
+            <select id="expenseCategory"><option value="">Todas categorias</option></select>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>Acoes</th></tr></thead><tbody id="expensesTable"></tbody></table></div>
+        </div>
+      </section>
+
+      <section id="incomesView" class="view hidden">
+        <div class="panel">
+          <div class="section-head"><h3>Receita</h3><button id="clearIncomeForm" class="ghost">Limpar</button></div>
+          <form id="incomeForm" class="grid-form">
+            <input type="hidden" name="id">
+            <label>Descricao<input name="description" required></label>
+            <label>Categoria<select name="category" required></select></label>
+            <label>Valor<input name="amount" type="number" step="0.01" min="0" required></label>
+            <label>Recebimento<input name="receipt_date" type="date" required></label>
+            <label>Status<select name="status"><option>Recebido</option><option>Pendente</option></select></label>
+            <label class="wide">Observacao<textarea name="notes" rows="2"></textarea></label>
+            <button class="primary" type="submit">Salvar receita</button>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="section-head"><h3>Receitas cadastradas</h3><div id="incomeCount" class="badge">0</div></div>
+          <div class="filters">
+            <select id="incomeStatus"><option value="">Todos os status</option><option>Recebido</option><option>Pendente</option></select>
+            <select id="incomeCategory"><option value="">Todas categorias</option></select>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Data</th><th>Status</th><th>Acoes</th></tr></thead><tbody id="incomesTable"></tbody></table></div>
+        </div>
+      </section>
+
+      <section id="reportsView" class="view hidden">
+        <div class="panel">
+          <div class="section-head">
+            <h3>Relatorio mensal</h3>
+            <button id="exportReport" class="primary">Exportar CSV</button>
+          </div>
+          <div class="filters">
+            <select id="reportType">
+              <option value="">Receitas e despesas</option>
+              <option>Receita</option>
+              <option>Despesa</option>
+            </select>
+          </div>
+          <div class="report-summary">
+            <div><span>Receitas</span><strong id="reportIncome">R$ 0,00</strong></div>
+            <div><span>Despesas</span><strong id="reportExpense">R$ 0,00</strong></div>
+            <div><span>Saldo final</span><strong id="reportBalance">R$ 0,00</strong></div>
+          </div>
+        </div>
+        <div class="two-columns">
+          <section class="panel"><h3>Contas pagas</h3><div class="table-wrap"><table><tbody id="paidReport"></tbody></table></div></section>
+          <section class="panel"><h3>Contas pendentes</h3><div class="table-wrap"><table><tbody id="pendingReport"></tbody></table></div></section>
+        </div>
+      </section>
+
+      <section id="settingsView" class="view hidden">
+        <div class="panel narrow">
+          <h3>Trocar senha</h3>
+          <form id="passwordForm" class="form-stack">
+            <label>Senha atual<input name="old_password" type="password" required></label>
+            <label>Nova senha<input name="new_password" type="password" minlength="6" required></label>
+            <button class="primary" type="submit">Alterar senha</button>
+            <p id="passwordMsg" class="message"></p>
+          </form>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>
