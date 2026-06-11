@@ -8,13 +8,11 @@ import re
 import secrets
 import sqlite3
 import urllib.parse
-import zipfile
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -501,97 +499,18 @@ def row_to_dict(row):
     return dict(row) if row else None
 
 
-def xml_text(value):
-    return (
-        str(value or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-
-
-def column_letter(index):
-    letters = ""
-    index += 1
-    while index:
-        index, remainder = divmod(index - 1, 26)
-        letters = chr(65 + remainder) + letters
-    return letters
-
-
-def column_index(cell_ref):
-    match = re.match(r"([A-Z]+)", cell_ref or "")
-    if not match:
-        return 0
-    index = 0
-    for char in match.group(1):
-        index = index * 26 + ord(char) - 64
-    return index - 1
-
-
-def sheet_xml(rows):
-    body = []
-    for row_index, row in enumerate(rows, start=1):
-        cells = []
-        for col_index, value in enumerate(row):
-            ref = f"{column_letter(col_index)}{row_index}"
-            cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{xml_text(value)}</t></is></c>')
-        body.append(f'<row r="{row_index}">{"".join(cells)}</row>')
-    return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        f'<sheetData>{"".join(body)}</sheetData>'
-        "</worksheet>"
-    )
-
-
 def build_xlsx(sheets):
-    workbook_sheets = []
-    workbook_rels = []
-    content_overrides = [
-        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-    ]
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    default_sheet = workbook.active
+    workbook.remove(default_sheet)
+    for name, rows in sheets.items():
+        worksheet = workbook.create_sheet(title=name)
+        for row in rows:
+            worksheet.append(list(row))
     output = BytesIO()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
-            "_rels/.rels",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
-            "</Relationships>",
-        )
-        for sheet_id, (name, rows) in enumerate(sheets.items(), start=1):
-            target = f"worksheets/sheet{sheet_id}.xml"
-            workbook_sheets.append(f'<sheet name="{xml_text(name)}" sheetId="{sheet_id}" r:id="rId{sheet_id}"/>')
-            workbook_rels.append(
-                f'<Relationship Id="rId{sheet_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="{target}"/>'
-            )
-            content_overrides.append(
-                f'<Override PartName="/xl/{target}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-            )
-            archive.writestr(f"xl/{target}", sheet_xml(rows))
-        archive.writestr(
-            "xl/workbook.xml",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
-            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-            f'<sheets>{"".join(workbook_sheets)}</sheets></workbook>',
-        )
-        archive.writestr(
-            "xl/_rels/workbook.xml.rels",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            f'{"".join(workbook_rels)}</Relationships>',
-        )
-        archive.writestr(
-            "[Content_Types].xml",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-            '<Default Extension="xml" ContentType="application/xml"/>'
-            f'{"".join(content_overrides)}</Types>',
-        )
+    workbook.save(output)
     return output.getvalue()
 
 
@@ -600,52 +519,31 @@ def build_import_template():
 
 
 def read_xlsx_workbook(payload):
+    from openpyxl import load_workbook
+    from openpyxl.utils.exceptions import InvalidFileException
+
     try:
-        archive = zipfile.ZipFile(BytesIO(payload))
-    except zipfile.BadZipFile as exc:
-        raise ValueError("Arquivo XLSX invalido") from exc
+        workbook = load_workbook(BytesIO(payload), data_only=True, read_only=True)
+    except (InvalidFileException, KeyError, OSError, ValueError) as exc:
+        print(f"[importacao] erro ao abrir XLSX com openpyxl.load_workbook: {type(exc).__name__}: {exc}")
+        print(f"[importacao] tamanho do arquivo recebido: {len(payload)} bytes")
+        raise ValueError("Arquivo XLSX invalido ou corrompido. Baixe novamente o modelo oficial e tente importar outra vez.") from exc
+    except Exception as exc:
+        print(f"[importacao] erro inesperado ao ler XLSX: {type(exc).__name__}: {exc}")
+        print(f"[importacao] tamanho do arquivo recebido: {len(payload)} bytes")
+        raise ValueError("Nao foi possivel ler a planilha Excel. Verifique se o arquivo esta no formato .xlsx.") from exc
 
-    ns = {
-        "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
-        "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
-        "office": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-    }
-    shared = []
-    if "xl/sharedStrings.xml" in archive.namelist():
-        root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
-        for item in root.findall("main:si", ns):
-            shared.append("".join(text.text or "" for text in item.findall(".//main:t", ns)))
-
-    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
-    rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
-    rel_map = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels.findall("rel:Relationship", ns)}
+    print(f"[importacao] workbook carregado com openpyxl. Abas encontradas: {workbook.sheetnames}")
     sheets = {}
-    for sheet in workbook.findall("main:sheets/main:sheet", ns):
-        name = sheet.attrib.get("name", "")
-        rel_id = sheet.attrib.get(f"{{{ns['office']}}}id")
-        target = rel_map.get(rel_id)
-        if not target:
-            continue
-        path = "xl/" + target.lstrip("/")
-        if path not in archive.namelist():
-            path = "xl/" + target.replace("../", "").lstrip("/")
-        root = ET.fromstring(archive.read(path))
+    for worksheet in workbook.worksheets:
         rows = []
-        for row in root.findall(".//main:sheetData/main:row", ns):
-            values = []
-            for cell in row.findall("main:c", ns):
-                idx = column_index(cell.attrib.get("r", ""))
-                while len(values) <= idx:
-                    values.append("")
-                cell_type = cell.attrib.get("t")
-                if cell_type == "inlineStr":
-                    value = "".join(text.text or "" for text in cell.findall(".//main:t", ns))
-                else:
-                    raw = cell.findtext("main:v", default="", namespaces=ns)
-                    value = shared[int(raw)] if cell_type == "s" and raw else raw
-                values[idx] = str(value).strip()
+        for row in worksheet.iter_rows(values_only=True):
+            values = ["" if value is None else str(value).strip() for value in row]
+            while values and values[-1] == "":
+                values.pop()
             rows.append(values)
-        sheets[name.upper()] = rows
+        sheets[worksheet.title.upper()] = rows
+        print(f"[importacao] aba {worksheet.title}: {len(rows)} linhas lidas")
     return sheets
 
 
@@ -1877,15 +1775,19 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.wfile.write(payload)
 
     def decode_import_workbook(self, data):
+        filename = str(data.get("filename", "")).strip()
         content = str(data.get("content_base64", ""))
+        print(f"[importacao] decode XLSX solicitado. arquivo={filename or '(sem nome)'} base64_chars={len(content)}")
         if not content:
             raise ValueError("Arquivo XLSX obrigatorio")
         if "," in content:
             content = content.split(",", 1)[1]
         try:
-            payload = base64.b64decode(content)
-        except ValueError as exc:
-            raise ValueError("Arquivo XLSX invalido") from exc
+            payload = base64.b64decode(content, validate=True)
+        except Exception as exc:
+            print(f"[importacao] erro ao decodificar base64: {type(exc).__name__}: {exc}")
+            raise ValueError("Arquivo XLSX invalido. O conteudo recebido nao esta em base64 valido.") from exc
+        print(f"[importacao] XLSX decodificado. bytes={len(payload)} abas_esperadas={list(IMPORT_SHEETS.keys())}")
         return read_xlsx_workbook(payload)
 
     def validate_import_workbook(self, workbook):
