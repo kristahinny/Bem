@@ -420,6 +420,18 @@ def main():
         cashflow = request("GET", "/api/cashflow", token=normal_login["token"])
         csv_bytes = request("GET", "/api/report/export?month=6&year=2026", token=normal_login["token"])
         request("DELETE", f"/api/categories/{category['id']}", token=super_token)
+        normal_financial_reset_blocked = False
+        try:
+            request("POST", "/api/maintenance/financial-reset", {"confirmation": "LIMPAR DADOS"}, normal_login["token"])
+        except urllib.error.HTTPError as exc:
+            normal_financial_reset_blocked = exc.code == 403
+        financial_reset = request("POST", "/api/maintenance/financial-reset", {"confirmation": "LIMPAR DADOS"}, super_token)
+        reset_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])
+        reset_expenses = request("GET", "/api/expenses?year=2026", token=normal_login["token"])
+        reset_incomes = request("GET", "/api/incomes?year=2026", token=normal_login["token"])
+        reset_goals = request("GET", "/api/goals", token=normal_login["token"])
+        reset_categories = request("GET", "/api/categories/manage", token=super_token)
+        reset_users = request("GET", "/api/users", token=super_token)
 
         assert_true(super_login["user"]["profile"] == "superadmin", "login superadmin falhou")
         assert_true(normal_login["user"]["profile"] == "usuario", "cadastro publico nao criou usuario comum")
@@ -492,6 +504,14 @@ def main():
         assert_true(filtered_super_dashboard["cards"]["total_income"] == dashboard["cards"]["total_income"], "dashboard filtrado do superadmin divergiu do usuario")
         assert_true(filtered_super_report["summary"]["final_balance"] == report["summary"]["final_balance"], "relatorio filtrado do superadmin divergiu do usuario")
         assert_true(len(charts["months"]) == 12 and len(cashflow["cashflow"]) == 12, "graficos ou fluxo futuro nao retornaram 12 meses")
+        assert_true(normal_financial_reset_blocked, "usuario comum executou limpeza financeira administrativa")
+        assert_true(financial_reset["success"] is True and financial_reset["result"]["total_removed"] > 0, "limpeza financeira nao removeu dados")
+        assert_true(financial_reset["result"]["users_preserved"] >= 3, "limpeza financeira removeu usuarios")
+        assert_true(reset_dashboard["cards"]["total_income"] == 0 and reset_dashboard["cards"]["total_expenses"] == 0 and reset_dashboard["cards"]["goals_total"] == 0, "dashboard nao zerou apos limpeza financeira")
+        assert_true(not reset_expenses["expenses"] and not reset_incomes["incomes"] and not reset_goals["goals"], "dados financeiros continuaram nas listagens apos limpeza")
+        assert_true(any(item["name"] == "Moradia" and item["active"] == 1 for item in reset_categories["categories"]), "categorias padrao nao foram preservadas")
+        assert_true(not any(item["name"].startswith("Categoria Teste") for item in reset_categories["categories"]), "categorias personalizadas nao foram removidas")
+        assert_true(any(item["id"] == public_user["id"] for item in reset_users["users"]), "usuarios nao foram preservados apos limpeza financeira")
         print(
             json.dumps(
                 {
@@ -520,6 +540,8 @@ def main():
                     "filtered_super_expenses_count": len(filtered_super_expenses["expenses"]),
                     "admin_created_sees_own_total": admin_dashboard["cards"]["total_income"],
                     "superadmin_sees_all_income": super_dashboard["cards"]["total_income"],
+                    "financial_reset_removed": financial_reset["result"]["total_removed"],
+                    "financial_reset_users_preserved": financial_reset["result"]["users_preserved"],
                     "expense_id": expense["id"],
                     "income_id": income["id"],
                     "total_paid": dashboard["cards"]["total_paid"],

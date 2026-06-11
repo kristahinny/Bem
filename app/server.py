@@ -797,6 +797,62 @@ def run_cleanup(conn, mode="manual"):
     return {"run_at": run_at, "mode": mode, "report": report}
 
 
+def run_financial_data_reset(conn, user):
+    run_at = now()
+    report = []
+
+    for table in ("expenses", "incomes", "goals", "import_history"):
+        total = count_where(conn, table, "1 = 1")
+        if total:
+            delete_where(conn, table, "1 = 1")
+        report.append({"table": table, "removed": total})
+
+    placeholders = ", ".join("?" for _ in DEFAULT_CATEGORIES)
+    custom_categories = count_where(conn, "categories", f"name NOT IN ({placeholders})", tuple(DEFAULT_CATEGORIES))
+    if custom_categories:
+        delete_where(conn, "categories", f"name NOT IN ({placeholders})", tuple(DEFAULT_CATEGORIES))
+    for category in DEFAULT_CATEGORIES:
+        insert_default_category(conn, category)
+        conn.execute("UPDATE categories SET active = 1 WHERE name = ?", (category,))
+    report.append({"table": "categories_personalizadas", "removed": custom_categories})
+
+    expired_sessions = count_where(conn, "sessions", "expires_at <= ?", (run_at,))
+    if expired_sessions:
+        delete_where(conn, "sessions", "expires_at <= ?", (run_at,))
+    report.append({"table": "sessions_expiradas", "removed": expired_sessions})
+
+    old_logs = count_where(conn, "maintenance_cleanup_logs", "1 = 1")
+    if old_logs:
+        delete_where(conn, "maintenance_cleanup_logs", "1 = 1")
+
+    temp_files = []
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    for path in TEMP_DIR.rglob("*"):
+        if path.is_file():
+            temp_files.append(path)
+    for path in temp_files:
+        try:
+            path.unlink()
+        except OSError as exc:
+            print(f"[manutencao] falha ao remover arquivo temporario {path}: {exc}")
+    report.append({"table": "arquivos_temporarios", "removed": len(temp_files)})
+    report.append({"table": "logs_antigos", "removed": old_logs})
+
+    total_removed = sum(item["removed"] for item in report)
+    details = f"Executado por {user['username']} (id {user['id']}). Usuarios e categorias padrao preservados."
+    log_cleanup(conn, run_at, "limpeza_financeira", "limpeza_dados_financeiros", 0, total_removed, details)
+    users_preserved = count_where(conn, "users", "1 = 1")
+    return {
+        "run_at": run_at,
+        "mode": "limpeza_financeira",
+        "executed_by": user["username"],
+        "executed_by_id": user["id"],
+        "users_preserved": users_preserved,
+        "report": report,
+        "total_removed": total_removed,
+    }
+
+
 def run_daily_cleanup(conn):
     last = conn.execute(
         "SELECT run_at FROM maintenance_cleanup_logs WHERE mode = ? ORDER BY run_at DESC LIMIT 1",
@@ -1298,6 +1354,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 return self.handle_import_commit(data)
             if path == "/api/maintenance/run":
                 return self.handle_run_maintenance()
+            if path == "/api/maintenance/financial-reset":
+                return self.handle_financial_data_reset(data)
             if self.require_user() is None:
                 return
             if path == "/api/expenses":
@@ -1679,6 +1737,18 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             settings = maintenance_settings(conn)
             logs = conn.execute("SELECT * FROM maintenance_cleanup_logs ORDER BY run_at DESC, id DESC LIMIT 50").fetchall()
         self.send_json({"result": result, "settings": settings, "logs": [row_to_dict(row) for row in logs]})
+
+    def handle_financial_data_reset(self, data):
+        user = self.require_superadmin()
+        if user is None:
+            return
+        if str(data.get("confirmation", "")).strip() != "LIMPAR DADOS":
+            return self.send_error_json("Confirmacao invalida. Digite LIMPAR DADOS para executar.", HTTPStatus.BAD_REQUEST)
+        with connect() as conn:
+            result = run_financial_data_reset(conn, user)
+            settings = maintenance_settings(conn)
+            logs = conn.execute("SELECT * FROM maintenance_cleanup_logs ORDER BY run_at DESC, id DESC LIMIT 50").fetchall()
+        self.send_json({"success": True, "result": result, "settings": settings, "logs": [row_to_dict(row) for row in logs]})
 
     def handle_dashboard(self, params):
         user = self.require_user()

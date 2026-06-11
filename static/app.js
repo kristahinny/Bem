@@ -582,6 +582,23 @@ async function runMaintenance() {
   $("#maintenanceLast").textContent = `Ultima limpeza: ${fmtDate(data.result.run_at)} - ${data.result.mode}`;
 }
 
+async function resetFinancialData() {
+  const confirmation = prompt("Digite LIMPAR DADOS para zerar apenas os dados financeiros:");
+  if (confirmation !== "LIMPAR DADOS") {
+    toast("Limpeza cancelada.");
+    return;
+  }
+  const data = await api("/api/maintenance/financial-reset", {
+    method: "POST",
+    body: JSON.stringify({ confirmation }),
+  });
+  const total = data.result?.total_removed || 0;
+  toast(`Dados financeiros limpos. ${total} registros removidos.`);
+  await loadCategories();
+  await loadMaintenance();
+  await refreshAfterMutation([loadExpenses, loadIncomes, loadGoals]);
+}
+
 function toggleInstallmentFields() {
   const show = $("#isInstallment")?.value === "Sim";
   $$(".installment-fields").forEach((field) => field.classList.toggle("hidden", !show));
@@ -965,6 +982,7 @@ function bindEvents() {
   on("#clearCategoryForm", "click", () => clearForm($("#categoryForm")));
   on("#maintenanceForm", "submit", saveMaintenanceSettings);
   on("#runMaintenance", "click", runMaintenance);
+  on("#resetFinancialData", "click", resetFinancialData);
   on("#reloadDeletedUsers", "click", loadDeletedUsers);
   on("#downloadTemplate", "click", () => {
     window.location.href = "/api/import/template";
