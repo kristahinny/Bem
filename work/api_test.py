@@ -188,6 +188,11 @@ def main():
             },
             normal_login["token"],
         )
+        future_after_installment = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])["cards"]["future_installments"]
+        request("POST", f"/api/expenses/{installment['ids'][1]}/pay", {"payment_date": "2026-07-20"}, normal_login["token"])
+        future_after_paid = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])["cards"]["future_installments"]
+        cancel_installments = request("POST", f"/api/expenses/{installment['ids'][0]}/cancel-future", {}, normal_login["token"])
+        future_after_cancel_installments = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])["cards"]["future_installments"]
         request(
             "PUT",
             f"/api/incomes/{recurring_income['ids'][1]}",
@@ -349,6 +354,9 @@ def main():
         assert_true(normal_maintenance_blocked, "usuario comum acessou manutencao")
         assert_true("settings" in maintenance_status and maintenance_settings["settings"]["cleanup_logs_days"] == 90, "configuracao de manutencao falhou")
         assert_true(len(maintenance_run["result"]["report"]) >= 4, "limpeza manual nao gerou relatorio")
+        assert_true(future_after_installment == 2950.0, "parcelas futuras incluiu valor incorreto apos criar parcelamento")
+        assert_true(future_after_paid == 2700.0, "parcela paga nao saiu de parcelas futuras")
+        assert_true(cancel_installments["cancelled"] == 8 and future_after_cancel_installments == 300.0, "parcelas canceladas nao sairam de parcelas futuras")
         assert_true(set(template_sheets.keys()) >= {"DESPESAS", "RECEITAS", "METAS", "PARCELADAS"}, "modelo XLSX nao possui as abas oficiais")
         assert_true(official_template_preview["errors"] == [] and len(official_template_preview["valid"]) == 4, "modelo oficial XLSX nao passou na previa")
         assert_true(preview["errors"] == [] and len(preview["valid"]) == 4, "preview de importacao XLSX falhou")

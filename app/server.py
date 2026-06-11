@@ -1620,11 +1620,20 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 f"SELECT * FROM goals WHERE active = 1{scope_sql}",
                 tuple(scope_values),
             ).fetchall()
+            deleted_filter = " AND deleted = 0" if "deleted" in table_columns(conn, "expenses") else ""
             future_installments = conn.execute(
                 f"""
                 SELECT COALESCE(SUM(amount), 0) AS total
                 FROM expenses
-                WHERE active = 1 AND status != 'Pago' AND cancelled = 0 AND installment_group IS NOT NULL AND due_date > ?{scope_sql}
+                WHERE active = 1
+                  AND status != 'Pago'
+                  AND cancelled = 0
+                  {deleted_filter}
+                  AND installment_group IS NOT NULL
+                  AND installment_group != ''
+                  AND installment_number IS NOT NULL
+                  AND installment_total IS NOT NULL
+                  AND due_date > ?{scope_sql}
                 """,
                 (today, *scope_values),
             ).fetchone()
