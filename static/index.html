@@ -269,6 +269,13 @@
         <div class="panel settings-panel superadmin-only hidden" data-settings-panel="security">
           <h3>Seguranca</h3>
           <p class="message">Permissoes administrativas continuam protegidas no backend. Usuarios comuns nao acessam rotas de usuarios ou categorias administrativas.</p>
+          <div class="section-head"><h3>Usuarios excluidos</h3><button id="reloadDeletedUsers" class="ghost" type="button">Atualizar</button></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Nome</th><th>Usuario</th><th>Perfil</th><th>Excluido em</th><th>Excluido por</th><th>Acoes</th></tr></thead>
+              <tbody id="deletedUsersTable"></tbody>
+            </table>
+          </div>
         </div>
 
         <div class="panel settings-panel superadmin-only hidden" data-settings-panel="maintenance">

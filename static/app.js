@@ -6,6 +6,7 @@ const state = {
   expenses: [],
   incomes: [],
   users: [],
+  deletedUsers: [],
   goals: [],
   categoriesManaged: [],
   importRows: [],
@@ -308,8 +309,16 @@ function renderGoals() {
 async function loadUsers() {
   const data = await api("/api/users");
   state.users = data.users;
-  $("#userCount").textContent = data.users.length;
-  $("#usersTable").innerHTML = data.users.map((item) => `
+  renderUsers();
+  await loadManagedCategories();
+}
+
+function renderUsers() {
+  const userCount = $("#userCount");
+  const usersTable = $("#usersTable");
+  if (userCount) userCount.textContent = state.users.length;
+  if (!usersTable) return;
+  usersTable.innerHTML = state.users.map((item) => `
     <tr>
       <td>${escapeHtml(item.full_name)}</td>
       <td>${escapeHtml(item.username)}</td>
@@ -324,7 +333,26 @@ async function loadUsers() {
       </td>
     </tr>
   `).join("") || `<tr><td colspan="6">Nenhum usuario cadastrado.</td></tr>`;
-  await loadManagedCategories();
+}
+
+async function loadDeletedUsers() {
+  if (state.user?.profile !== "superadmin") return;
+  const target = $("#deletedUsersTable");
+  if (!target) return;
+  const data = await api("/api/users/deleted");
+  state.deletedUsers = data.users || [];
+  target.innerHTML = state.deletedUsers.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.full_name)}</td>
+      <td>${escapeHtml(item.username)}</td>
+      <td><span class="pill ${item.profile}">${item.profile}</span></td>
+      <td>${item.deleted_at ? fmtDate(item.deleted_at.slice(0, 10)) : ""}</td>
+      <td>${escapeHtml(item.deleted_by_username || "-")}</td>
+      <td class="actions">
+        <button class="success" onclick="restoreUser(${item.id})">Restaurar</button>
+      </td>
+    </tr>
+  `).join("") || `<tr><td colspan="6">Nenhum usuario excluido.</td></tr>`;
 }
 
 async function loadManagedCategories() {
@@ -392,6 +420,7 @@ async function refreshAll() {
     if (state.view === "settings") {
       if (state.user?.profile === "superadmin" && state.settingsTab === "users") await loadUsers();
       if (state.user?.profile === "superadmin" && state.settingsTab === "categories") await loadManagedCategories();
+      if (state.user?.profile === "superadmin" && state.settingsTab === "security") await loadDeletedUsers();
       if (state.user?.profile === "superadmin" && state.settingsTab === "maintenance") await loadMaintenance();
     }
   } catch (error) {
@@ -846,8 +875,18 @@ window.toggleUser = async (id) => {
 
 window.deleteUser = async (id) => {
   if (!confirm("Excluir este usuario?")) return;
-  await api(`/api/users/${id}`, { method: "DELETE" });
-  toast("Usuario excluido.");
+  const data = await api(`/api/users/${id}`, { method: "DELETE" });
+  state.users = state.users.filter((user) => user.id !== id);
+  renderUsers();
+  toast(data.message || "Usuário desativado com sucesso");
+  await refreshAfterMutation([loadUsers, loadUserOptions, loadDeletedUsers]);
+};
+
+window.restoreUser = async (id) => {
+  const data = await api(`/api/users/${id}/restore`, { method: "POST", body: "{}" });
+  state.deletedUsers = state.deletedUsers.filter((user) => user.id !== id);
+  await loadDeletedUsers();
+  toast(data.message || "Usuário restaurado com sucesso.");
   await refreshAfterMutation([loadUsers, loadUserOptions]);
 };
 
@@ -924,6 +963,7 @@ function bindEvents() {
   on("#clearCategoryForm", "click", () => clearForm($("#categoryForm")));
   on("#maintenanceForm", "submit", saveMaintenanceSettings);
   on("#runMaintenance", "click", runMaintenance);
+  on("#reloadDeletedUsers", "click", loadDeletedUsers);
   on("#downloadTemplate", "click", () => {
     window.location.href = "/api/import/template";
   });

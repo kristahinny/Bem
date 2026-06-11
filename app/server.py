@@ -184,6 +184,9 @@ CREATE TABLE IF NOT EXISTS users (
     salt TEXT NOT NULL,
     profile TEXT NOT NULL DEFAULT 'usuario',
     active INTEGER NOT NULL DEFAULT 1,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT,
+    deleted_by INTEGER,
     created_at TEXT NOT NULL
 );
 
@@ -294,6 +297,9 @@ CREATE TABLE IF NOT EXISTS users (
     salt TEXT NOT NULL,
     profile TEXT NOT NULL DEFAULT 'usuario',
     active INTEGER NOT NULL DEFAULT 1,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT,
+    deleted_by INTEGER REFERENCES users(id),
     created_at TEXT NOT NULL
 );
 
@@ -413,7 +419,7 @@ def init_db():
                 ("admin", "Administrador", password_hash, salt, "admin", 1, now()),
             )
         else:
-            conn.execute("UPDATE users SET profile = 'admin', active = 1 WHERE username = 'admin'")
+            conn.execute("UPDATE users SET profile = 'admin', active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL WHERE username = 'admin'")
 
         superadmin = conn.execute("SELECT id FROM users WHERE username = ?", (SUPERADMIN_USERNAME,)).fetchone()
         if not superadmin:
@@ -424,7 +430,7 @@ def init_db():
             )
         else:
             conn.execute(
-                "UPDATE users SET profile = 'superadmin', active = 1 WHERE username = ?",
+                "UPDATE users SET profile = 'superadmin', active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL WHERE username = ?",
                 (SUPERADMIN_USERNAME,),
             )
 
@@ -458,6 +464,12 @@ def ensure_user_columns(conn):
         conn.execute("ALTER TABLE users ADD COLUMN profile TEXT NOT NULL DEFAULT 'usuario'")
     if "active" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+    if "deleted" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+    if "deleted_at" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT")
+    if "deleted_by" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN deleted_by INTEGER")
 
 
 def ensure_category_columns(conn):
@@ -909,6 +921,9 @@ def public_user(row):
         "full_name": data.get("full_name", ""),
         "profile": data.get("profile", "usuario"),
         "active": bool(data.get("active", 1)),
+        "deleted": bool(data.get("deleted", 0)),
+        "deleted_at": data.get("deleted_at"),
+        "deleted_by": data.get("deleted_by"),
         "created_at": data.get("created_at"),
     }
 
@@ -1162,7 +1177,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 SELECT users.id, users.username, users.full_name, users.profile, users.active, users.created_at
                 FROM sessions
                 JOIN users ON users.id = sessions.user_id
-                WHERE sessions.token = ? AND sessions.expires_at > ? AND users.active = 1
+                WHERE sessions.token = ? AND sessions.expires_at > ? AND users.active = 1 AND users.deleted = 0
                 """,
                 (token, now()),
             ).fetchone()
@@ -1204,6 +1219,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     return user and self.send_json({"user": user})
                 if path == "/api/users":
                     return self.handle_list_users()
+                if path == "/api/users/deleted":
+                    return self.handle_list_deleted_users()
                 if path == "/api/categories":
                     return self.handle_categories()
                 if path == "/api/categories/manage":
@@ -1255,6 +1272,9 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             if path.startswith("/api/users/") and path.endswith("/toggle"):
                 user_id = int(path.split("/")[3])
                 return self.handle_toggle_user(user_id)
+            if path.startswith("/api/users/") and path.endswith("/restore"):
+                user_id = int(path.split("/")[3])
+                return self.handle_restore_user(user_id)
             if path == "/api/import/preview":
                 return self.handle_import_preview(data)
             if path == "/api/import/commit":
@@ -1345,7 +1365,9 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         password = str(data.get("password", ""))
         with connect() as conn:
             user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-            if not user or not user["active"] or not verify_password(password, user["salt"], user["password_hash"]):
+            if user and (not user["active"] or user["deleted"]):
+                return self.send_error_json("Usuário desativado ou excluído.", HTTPStatus.UNAUTHORIZED)
+            if not user or not verify_password(password, user["salt"], user["password_hash"]):
                 return self.send_error_json("Usuario ou senha invalidos", HTTPStatus.UNAUTHORIZED)
             token = secrets.token_urlsafe(32)
             expires_at = (datetime.now() + timedelta(hours=SESSION_HOURS)).replace(microsecond=0).isoformat()
@@ -1382,9 +1404,31 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return
         with connect() as conn:
             rows = conn.execute(
-                "SELECT id, username, full_name, profile, active, created_at FROM users ORDER BY username"
+                "SELECT id, username, full_name, profile, active, deleted, deleted_at, deleted_by, created_at FROM users WHERE active = 1 AND deleted = 0 ORDER BY username"
             ).fetchall()
         self.send_json({"users": [public_user(row) for row in rows]})
+
+    def handle_list_deleted_users(self):
+        if self.require_superadmin() is None:
+            return
+        with connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT users.id, users.username, users.full_name, users.profile, users.active,
+                       users.deleted, users.deleted_at, users.deleted_by, users.created_at,
+                       deleted_by_user.username AS deleted_by_username
+                FROM users
+                LEFT JOIN users AS deleted_by_user ON deleted_by_user.id = users.deleted_by
+                WHERE users.deleted = 1
+                ORDER BY users.deleted_at DESC, users.username
+                """
+            ).fetchall()
+        users = []
+        for row in rows:
+            item = public_user(row)
+            item["deleted_by_username"] = row["deleted_by_username"]
+            users.append(item)
+        self.send_json({"users": users})
 
     def handle_create_user(self, data):
         if self.require_superadmin() is None:
@@ -1417,9 +1461,11 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return
         payload = user_payload(data)
         with connect() as conn:
-            existing = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+            existing = conn.execute("SELECT username, deleted FROM users WHERE id = ?", (user_id,)).fetchone()
             if not existing:
                 return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
+            if existing["deleted"]:
+                return self.send_error_json("Usuario excluido. Restaure antes de editar.", HTTPStatus.BAD_REQUEST)
             if existing["username"] == SUPERADMIN_USERNAME and payload["username"] != SUPERADMIN_USERNAME:
                 return self.send_error_json("O SuperAdmin principal nao pode ser renomeado")
             profile = "superadmin" if existing["username"] == SUPERADMIN_USERNAME else payload["profile"]
@@ -1441,21 +1487,26 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             raise ValueError("A senha deve ter pelo menos 6 caracteres")
         salt, password_hash = hash_password(new_password)
         with connect() as conn:
+            existing = conn.execute("SELECT deleted FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not existing:
+                return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
+            if existing["deleted"]:
+                return self.send_error_json("Usuario excluido. Restaure antes de alterar a senha.", HTTPStatus.BAD_REQUEST)
             cur = conn.execute(
                 "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
                 (password_hash, salt, user_id),
             )
-        if cur.rowcount == 0:
-            return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
         self.send_json({"ok": True})
 
     def handle_toggle_user(self, user_id):
         if self.require_superadmin() is None:
             return
         with connect() as conn:
-            user = conn.execute("SELECT username, active FROM users WHERE id = ?", (user_id,)).fetchone()
+            user = conn.execute("SELECT username, active, deleted FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
+            if user["deleted"]:
+                return self.send_error_json("Usuario excluido. Restaure antes de alterar o status.", HTTPStatus.BAD_REQUEST)
             if user["username"] == SUPERADMIN_USERNAME:
                 return self.send_error_json("O SuperAdmin principal nao pode ser desativado")
             new_active = 0 if user["active"] else 1
@@ -1465,17 +1516,35 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": True, "active": bool(new_active)})
 
     def handle_delete_user(self, user_id):
-        if self.require_superadmin() is None:
+        admin = self.require_superadmin()
+        if admin is None:
             return
         with connect() as conn:
-            user = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+            user = conn.execute("SELECT username, deleted FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
             if user["username"] == SUPERADMIN_USERNAME:
                 return self.send_error_json("O SuperAdmin principal nao pode ser excluido")
+            if user["deleted"]:
+                return self.send_error_json("Usuario ja esta excluido")
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
-            conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
-        self.send_json({"success": True, "message": "Registro excluído com sucesso", "id": user_id, "deactivated": True})
+            conn.execute(
+                "UPDATE users SET active = 0, deleted = 1, deleted_at = ?, deleted_by = ? WHERE id = ?",
+                (now(), admin["id"], user_id),
+            )
+        self.send_json({"success": True, "message": "Usuário desativado com sucesso", "id": user_id, "deactivated": True})
+
+    def handle_restore_user(self, user_id):
+        if self.require_superadmin() is None:
+            return
+        with connect() as conn:
+            cur = conn.execute(
+                "UPDATE users SET active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL WHERE id = ? AND deleted = 1",
+                (user_id,),
+            )
+        if cur.rowcount == 0:
+            return self.send_error_json("Usuario excluido nao encontrado", HTTPStatus.NOT_FOUND)
+        self.send_json({"success": True, "message": "Usuário restaurado com sucesso", "id": user_id})
 
     def handle_change_password(self, data):
         user = self.require_user()

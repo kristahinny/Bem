@@ -362,8 +362,22 @@ def main():
         normal_goals = request("GET", "/api/goals", token=normal_login["token"])
         admin_expenses = request("GET", "/api/expenses?month=6&year=2026", token=admin_login["token"])
         admin_incomes = request("GET", "/api/incomes?month=6&year=2026", token=admin_login["token"])
-        request("DELETE", f"/api/users/{created_admin['id']}", token=super_token)
+        delete_user_response = request("DELETE", f"/api/users/{created_admin['id']}", token=super_token)
         users_after_delete = request("GET", "/api/users", token=super_token)
+        deleted_users = request("GET", "/api/users/deleted", token=super_token)
+        deleted_login_blocked = False
+        try:
+            request("POST", "/api/login", {"username": "admin_criado", "password": "admin123"})
+        except urllib.error.HTTPError as exc:
+            deleted_login_blocked = exc.code == 401
+        with server.connect() as conn:
+            deleted_admin_row = conn.execute(
+                "SELECT active, deleted, deleted_at, deleted_by FROM users WHERE id = ?",
+                (created_admin["id"],),
+            ).fetchone()
+        restore_user_response = request("POST", f"/api/users/{created_admin['id']}/restore", {}, super_token)
+        users_after_restore = request("GET", "/api/users", token=super_token)
+        restored_login = request("POST", "/api/login", {"username": "admin_criado", "password": "admin123"})
         super_expenses = request("GET", "/api/expenses?month=6&year=2026", token=super_token)
         filtered_super_expenses = request(
             "GET",
@@ -412,7 +426,21 @@ def main():
         assert_true(not any(item["id"] == income_to_delete["id"] for item in normal_incomes["incomes"]), "receita excluida continuou na listagem")
         assert_true(not any(item["id"] == deleted_goal["id"] for item in normal_goals["goals"]), "meta excluida continuou na listagem")
         assert_true(dashboard_after_goal_delete["cards"]["goals_total"] == dashboard_before_goal_delete["cards"]["goals_total"] - 777, "dashboard nao recalculou metas apos exclusao")
-        assert_true(any(item["id"] == created_admin["id"] and item["active"] is False for item in users_after_delete["users"]), "usuario foi apagado em vez de desativado")
+        assert_true(delete_user_response["message"] == "Usuário desativado com sucesso", "DELETE de usuario nao retornou mensagem correta")
+        assert_true(not any(item["id"] == created_admin["id"] for item in users_after_delete["users"]), "usuario excluido continuou na listagem normal")
+        assert_true(deleted_login_blocked, "usuario excluido conseguiu fazer login")
+        assert_true(
+            deleted_admin_row
+            and int(deleted_admin_row["active"]) == 0
+            and int(deleted_admin_row["deleted"]) == 1
+            and deleted_admin_row["deleted_at"]
+            and int(deleted_admin_row["deleted_by"]) == super_login["user"]["id"],
+            "usuario excluido nao foi preservado com flags de exclusao logica",
+        )
+        assert_true(any(item["id"] == created_admin["id"] for item in deleted_users["users"]), "usuario excluido nao apareceu em Seguranca")
+        assert_true(restore_user_response["success"] is True, "restauracao de usuario falhou")
+        assert_true(any(item["id"] == created_admin["id"] for item in users_after_restore["users"]), "usuario restaurado nao voltou para a listagem")
+        assert_true(restored_login["user"]["username"] == "admin_criado", "usuario restaurado nao conseguiu login")
         assert_true(any(item["description"] == "Despesa importada" for item in normal_expenses["expenses"]), "despesa importada nao apareceu para o usuario")
         assert_true(any(item["description"] == "Compra parcelada importada (1/2)" for item in normal_expenses["expenses"]), "parcela importada nao apareceu para o usuario")
         assert_true(any(item["description"] == "Notebook (2/10)" and float(item["amount"]) == 250 for item in july_expenses["expenses"]), "edicao individual de parcela de despesa falhou")
@@ -443,7 +471,9 @@ def main():
                     "duplicate_blocked": duplicate_blocked,
                     "created_admin_id": created_admin["id"],
                     "category_soft_deleted": True,
-                    "user_soft_deleted": True,
+                    "user_soft_deleted": delete_user_response["success"],
+                    "deleted_user_login_blocked": deleted_login_blocked,
+                    "user_restored": restore_user_response["success"],
                     "maintenance_items": len(maintenance_run["result"]["report"]),
                     "imported": committed["imported"],
                     "duplicate_import_skipped": duplicate_commit["skipped"],
