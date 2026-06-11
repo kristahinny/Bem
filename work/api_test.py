@@ -432,6 +432,26 @@ def main():
         reset_goals = request("GET", "/api/goals", token=normal_login["token"])
         reset_categories = request("GET", "/api/categories/manage", token=super_token)
         reset_users = request("GET", "/api/users", token=super_token)
+        normal_system_reset_blocked = False
+        try:
+            request("POST", "/api/maintenance/system-reset", {"confirmation": "ZERAR SISTEMA"}, normal_login["token"])
+        except urllib.error.HTTPError as exc:
+            normal_system_reset_blocked = exc.code == 403
+        system_reset = request("POST", "/api/maintenance/system-reset", {"confirmation": "ZERAR SISTEMA"}, super_token)
+        system_token = system_reset["token"]
+        system_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=system_token)
+        system_expenses = request("GET", "/api/expenses?year=2026", token=system_token)
+        system_incomes = request("GET", "/api/incomes?year=2026", token=system_token)
+        system_goals = request("GET", "/api/goals", token=system_token)
+        system_users = request("GET", "/api/users", token=system_token)
+        system_deleted_users = request("GET", "/api/users/deleted", token=system_token)
+        system_categories = request("GET", "/api/categories/manage", token=system_token)
+        removed_user_login_blocked = False
+        try:
+            request("POST", "/api/login", {"username": "usuario_publico", "password": "usuario123"})
+        except urllib.error.HTTPError as exc:
+            removed_user_login_blocked = exc.code == 401
+        principal_login = request("POST", "/api/login", {"username": system_reset["user"]["username"], "password": "admin123"})
 
         assert_true(super_login["user"]["profile"] == "superadmin", "login superadmin falhou")
         assert_true(normal_login["user"]["profile"] == "usuario", "cadastro publico nao criou usuario comum")
@@ -512,6 +532,16 @@ def main():
         assert_true(any(item["name"] == "Moradia" and item["active"] == 1 for item in reset_categories["categories"]), "categorias padrao nao foram preservadas")
         assert_true(not any(item["name"].startswith("Categoria Teste") for item in reset_categories["categories"]), "categorias personalizadas nao foram removidas")
         assert_true(any(item["id"] == public_user["id"] for item in reset_users["users"]), "usuarios nao foram preservados apos limpeza financeira")
+        assert_true(normal_system_reset_blocked, "usuario comum executou zeragem completa")
+        assert_true(system_reset["success"] is True and system_reset["message"] == "Sistema zerado com sucesso.", "zeragem completa nao retornou sucesso")
+        assert_true(system_reset["result"]["users_preserved"] == 1, "zeragem completa preservou mais de um usuario")
+        assert_true(len(system_users["users"]) == 1 and system_users["users"][0]["profile"] == "superadmin", "zeragem completa nao manteve apenas o superadmin")
+        assert_true(not system_deleted_users["users"], "usuarios excluidos continuaram apos zeragem completa")
+        assert_true(removed_user_login_blocked, "usuario comum continuou conseguindo login apos zeragem")
+        assert_true(principal_login["user"]["profile"] == "superadmin", "admin/superadmin principal nao conseguiu login apos zeragem")
+        assert_true(system_dashboard["cards"]["total_income"] == 0 and system_dashboard["cards"]["total_expenses"] == 0 and system_dashboard["cards"]["goals_total"] == 0, "dashboard nao zerou apos zeragem completa")
+        assert_true(not system_expenses["expenses"] and not system_incomes["incomes"] and not system_goals["goals"], "dados financeiros continuaram apos zeragem completa")
+        assert_true(any(item["name"] == "Moradia" and item["active"] == 1 for item in system_categories["categories"]), "categorias padrao nao foram recriadas apos zeragem")
         print(
             json.dumps(
                 {
@@ -542,6 +572,8 @@ def main():
                     "superadmin_sees_all_income": super_dashboard["cards"]["total_income"],
                     "financial_reset_removed": financial_reset["result"]["total_removed"],
                     "financial_reset_users_preserved": financial_reset["result"]["users_preserved"],
+                    "system_reset_removed": system_reset["result"]["total_removed"],
+                    "system_reset_principal": system_reset["user"]["username"],
                     "expense_id": expense["id"],
                     "income_id": income["id"],
                     "total_paid": dashboard["cards"]["total_paid"],

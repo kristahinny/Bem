@@ -853,6 +853,107 @@ def run_financial_data_reset(conn, user):
     }
 
 
+def ensure_system_reset_principal(conn):
+    principal = conn.execute("SELECT * FROM users WHERE username = ?", (SUPERADMIN_USERNAME,)).fetchone()
+    if principal:
+        conn.execute(
+            "UPDATE users SET profile = 'superadmin', active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL WHERE id = ?",
+            (principal["id"],),
+        )
+        return conn.execute("SELECT * FROM users WHERE id = ?", (principal["id"],)).fetchone()
+
+    principal = conn.execute("SELECT * FROM users WHERE username = ?", ("admin",)).fetchone()
+    if principal:
+        conn.execute(
+            "UPDATE users SET profile = 'superadmin', active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL WHERE id = ?",
+            (principal["id"],),
+        )
+        return conn.execute("SELECT * FROM users WHERE id = ?", (principal["id"],)).fetchone()
+
+    principal = conn.execute("SELECT * FROM users WHERE profile = 'superadmin' ORDER BY id LIMIT 1").fetchone()
+    if principal:
+        conn.execute(
+            "UPDATE users SET profile = 'superadmin', active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL WHERE id = ?",
+            (principal["id"],),
+        )
+        return conn.execute("SELECT * FROM users WHERE id = ?", (principal["id"],)).fetchone()
+
+    salt, password_hash = hash_password("admin123")
+    cur = conn.execute(
+        """
+        INSERT INTO users (username, full_name, password_hash, salt, profile, active, deleted, created_at)
+        VALUES (?, ?, ?, ?, 'superadmin', 1, 0, ?)
+        """,
+        ("admin", "Administrador", password_hash, salt, now()),
+    )
+    return conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
+
+
+def run_system_reset(conn, user):
+    run_at = now()
+    principal = ensure_system_reset_principal(conn)
+    principal_id = principal["id"]
+    report = []
+
+    for table in ("expenses", "incomes", "goals", "import_history"):
+        total = count_where(conn, table, "1 = 1")
+        if total:
+            delete_where(conn, table, "1 = 1")
+        report.append({"table": table, "removed": total})
+
+    sessions_total = count_where(conn, "sessions", "1 = 1")
+    if sessions_total:
+        delete_where(conn, "sessions", "1 = 1")
+    report.append({"table": "sessions", "removed": sessions_total})
+
+    if "deleted_by" in table_columns(conn, "users"):
+        conn.execute("UPDATE users SET deleted_by = NULL WHERE deleted_by IS NOT NULL")
+    users_removed = count_where(conn, "users", "id <> ?", (principal_id,))
+    if users_removed:
+        delete_where(conn, "users", "id <> ?", (principal_id,))
+    report.append({"table": "users_nao_principais", "removed": users_removed})
+
+    placeholders = ", ".join("?" for _ in DEFAULT_CATEGORIES)
+    custom_categories = count_where(conn, "categories", f"name NOT IN ({placeholders})", tuple(DEFAULT_CATEGORIES))
+    if custom_categories:
+        delete_where(conn, "categories", f"name NOT IN ({placeholders})", tuple(DEFAULT_CATEGORIES))
+    for category in DEFAULT_CATEGORIES:
+        insert_default_category(conn, category)
+        conn.execute("UPDATE categories SET active = 1 WHERE name = ?", (category,))
+    report.append({"table": "categories_personalizadas", "removed": custom_categories})
+
+    old_logs = count_where(conn, "maintenance_cleanup_logs", "1 = 1")
+    if old_logs:
+        delete_where(conn, "maintenance_cleanup_logs", "1 = 1")
+
+    temp_files = []
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    for path in TEMP_DIR.rglob("*"):
+        if path.is_file():
+            temp_files.append(path)
+    for path in temp_files:
+        try:
+            path.unlink()
+        except OSError as exc:
+            print(f"[manutencao] falha ao remover arquivo temporario {path}: {exc}")
+    report.append({"table": "arquivos_temporarios", "removed": len(temp_files)})
+    report.append({"table": "logs_temporarios", "removed": old_logs})
+
+    total_removed = sum(item["removed"] for item in report)
+    details = f"Executado por {user['username']} (id {user['id']}). Mantido usuario {principal['username']} (id {principal_id})."
+    log_cleanup(conn, run_at, "zerar_sistema", "zerar_sistema", 0, total_removed, details)
+    return {
+        "run_at": run_at,
+        "mode": "zerar_sistema",
+        "executed_by": user["username"],
+        "executed_by_id": user["id"],
+        "principal_user": public_user(principal),
+        "users_preserved": 1,
+        "report": report,
+        "total_removed": total_removed,
+    }
+
+
 def run_daily_cleanup(conn):
     last = conn.execute(
         "SELECT run_at FROM maintenance_cleanup_logs WHERE mode = ? ORDER BY run_at DESC LIMIT 1",
@@ -1356,6 +1457,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 return self.handle_run_maintenance()
             if path == "/api/maintenance/financial-reset":
                 return self.handle_financial_data_reset(data)
+            if path == "/api/maintenance/system-reset":
+                return self.handle_system_reset(data)
             if self.require_user() is None:
                 return
             if path == "/api/expenses":
@@ -1749,6 +1852,32 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             settings = maintenance_settings(conn)
             logs = conn.execute("SELECT * FROM maintenance_cleanup_logs ORDER BY run_at DESC, id DESC LIMIT 50").fetchall()
         self.send_json({"success": True, "result": result, "settings": settings, "logs": [row_to_dict(row) for row in logs]})
+
+    def handle_system_reset(self, data):
+        user = self.require_superadmin()
+        if user is None:
+            return
+        if str(data.get("confirmation", "")).strip() != "ZERAR SISTEMA":
+            return self.send_error_json("Confirmacao invalida. Digite ZERAR SISTEMA para executar.", HTTPStatus.BAD_REQUEST)
+        with connect() as conn:
+            result = run_system_reset(conn, user)
+            token = secrets.token_urlsafe(32)
+            expires_at = (datetime.now() + timedelta(hours=SESSION_HOURS)).replace(microsecond=0).isoformat()
+            conn.execute(
+                "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+                (token, result["principal_user"]["id"], expires_at),
+            )
+            settings = maintenance_settings(conn)
+            logs = conn.execute("SELECT * FROM maintenance_cleanup_logs ORDER BY run_at DESC, id DESC LIMIT 50").fetchall()
+        self.send_json({
+            "success": True,
+            "message": "Sistema zerado com sucesso.",
+            "token": token,
+            "user": result["principal_user"],
+            "result": result,
+            "settings": settings,
+            "logs": [row_to_dict(row) for row in logs],
+        })
 
     def handle_dashboard(self, params):
         user = self.require_user()

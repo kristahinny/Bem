@@ -599,6 +599,31 @@ async function resetFinancialData() {
   await refreshAfterMutation([loadExpenses, loadIncomes, loadGoals]);
 }
 
+async function resetSystem() {
+  const confirmation = prompt("Digite ZERAR SISTEMA para apagar dados financeiros e usuarios nao principais:");
+  if (confirmation !== "ZERAR SISTEMA") {
+    toast("Zeragem cancelada.");
+    return;
+  }
+  const data = await api("/api/maintenance/system-reset", {
+    method: "POST",
+    body: JSON.stringify({ confirmation }),
+  });
+  if (data.token && data.user) {
+    state.token = data.token;
+    state.user = data.user;
+    localStorage.setItem("finance_token", state.token);
+    showApp();
+  }
+  toast(data.message || "Sistema zerado com sucesso.");
+  const userFilter = $("#filterUser");
+  if (userFilter) userFilter.value = "";
+  await loadCategories();
+  await loadUserOptions();
+  await loadMaintenance();
+  setView("dashboard");
+}
+
 function toggleInstallmentFields() {
   const show = $("#isInstallment")?.value === "Sim";
   $$(".installment-fields").forEach((field) => field.classList.toggle("hidden", !show));
@@ -983,6 +1008,7 @@ function bindEvents() {
   on("#maintenanceForm", "submit", saveMaintenanceSettings);
   on("#runMaintenance", "click", runMaintenance);
   on("#resetFinancialData", "click", resetFinancialData);
+  on("#resetSystem", "click", resetSystem);
   on("#reloadDeletedUsers", "click", loadDeletedUsers);
   on("#downloadTemplate", "click", () => {
     window.location.href = "/api/import/template";
