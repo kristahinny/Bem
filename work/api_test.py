@@ -165,24 +165,39 @@ def main():
         request("POST", f"/api/expenses/{expense['id']}/pay", {"payment_date": "2026-06-09"}, normal_login["token"])
         template_bytes = request("GET", "/api/import/template", token=normal_login["token"])
         template_sheets = server.read_xlsx_workbook(template_bytes)
+        expected_template_headers = {
+            "DESPESAS": ["Data", "Descrição", "Categoria", "Valor", "Vencimento", "Status", "Observação"],
+            "RECEITAS": ["Data", "Descrição", "Categoria", "Valor", "Observação"],
+            "METAS": ["Nome", "Descrição", "Valor Objetivo", "Valor Atual", "Data Prevista"],
+            "PARCELADAS": ["Descrição", "Categoria", "Valor Total", "Parcelas", "Data Primeira Parcela"],
+        }
+        for sheet_name, expected_headers in expected_template_headers.items():
+            assert_true(template_sheets.get(sheet_name, [[]])[0] == expected_headers, f"cabecalho oficial invalido na aba {sheet_name}")
+        official_template_payload = {"filename": "modelo-importacao-financeira.xlsx", "content_base64": base64.b64encode(template_bytes).decode("ascii")}
+        official_template_preview = request(
+            "POST",
+            "/api/import/preview",
+            official_template_payload,
+            normal_login["token"],
+        )
         import_workbook = server.build_xlsx(
             {
                 "DESPESAS": [
-                    ["Descrição", "Categoria", "Valor", "Data Vencimento", "Status", "Forma Pagamento", "Observação"],
-                    ["Despesa importada", "Moradia", "100", "2026-06-20", "Pendente", "Pix", ""],
+                    ["Data", "Descrição", "Categoria", "Valor", "Vencimento", "Status", "Observação"],
+                    ["2026-06-18", "Despesa importada", "Moradia", "100", "2026-06-20", "Pendente", ""],
                     ["", "", "", "", "", "", ""],
                 ],
                 "RECEITAS": [
-                    ["DESCRIÇÃO", "Categoria", "Valor", "Data Recebimento", "Status", "Observação"],
-                    ["Receita importada", "Outros", "200", "2026-06-21", "Recebido", ""],
+                    ["Data", "DESCRIÇÃO", "Categoria", "Valor", "Observação"],
+                    ["2026-06-21", "Receita importada", "Outros", "200", ""],
                 ],
                 "METAS": [
-                    ["Nome", "Descricao", "Valor Objetivo", "Valor Atual", "Data Prevista", "Status"],
-                    ["Meta importada", "Teste de meta", "1000", "100", "2026-12-31", "Em andamento"],
+                    ["Nome", "Descricao", "Valor Objetivo", "Valor Atual", "Data Prevista"],
+                    ["Meta importada", "Teste de meta", "1000", "100", "2026-12-31"],
                 ],
                 "PARCELADAS": [
-                    ["Descricao", "Categoria", "Valor Total", "Quantidade Parcelas", "Data Primeira Parcela", "Status", "Forma Pagamento", "Observacao"],
-                    ["Compra parcelada importada", "Cartao de Credito", "600", "2", "2026-06-25", "Pendente", "Cartao", ""],
+                    ["Descricao", "Categoria", "Valor Total", "Parcelas", "Data Primeira Parcela"],
+                    ["Compra parcelada importada", "Cartao de Credito", "600", "2", "2026-06-25"],
                 ],
             }
         )
@@ -236,6 +251,7 @@ def main():
         assert_true(any(item["id"] == safe_category["id"] and item["active"] == 0 for item in categories_after_delete["categories"]), "categoria foi apagada em vez de desativada")
         assert_true(any(item["name"] == "Categoria Teste Seguro" for item in categories_before["categories"]), "categoria nao foi criada/listada")
         assert_true(set(template_sheets.keys()) >= {"DESPESAS", "RECEITAS", "METAS", "PARCELADAS"}, "modelo XLSX nao possui as abas oficiais")
+        assert_true(official_template_preview["errors"] == [] and len(official_template_preview["valid"]) == 4, "modelo oficial XLSX nao passou na previa")
         assert_true(preview["errors"] == [] and len(preview["valid"]) == 4, "preview de importacao XLSX falhou")
         assert_true(committed["imported"] == 5, "importacao XLSX nao inseriu despesas, receitas, metas e parcelas")
         assert_true(duplicate_commit["imported"] == 0 and duplicate_commit["skipped"] == 4, "importacao duplicada nao foi ignorada")

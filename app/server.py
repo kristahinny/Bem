@@ -43,24 +43,32 @@ DEFAULT_CATEGORIES = [
 
 IMPORT_SHEETS = {
     "DESPESAS": {
-        "headers": ["descricao", "categoria", "valor", "data_vencimento", "status", "forma_pagamento", "observacao"],
-        "model_headers": ["Descricao", "Categoria", "Valor", "Data Vencimento", "Status", "Forma Pagamento", "Observacao"],
-        "sample": ["Mercado do mes", "Alimentacao", "250.00", "2026-06-15", "Pendente", "Pix", ""],
+        "headers": ["data_lancamento", "descricao", "categoria", "valor", "data_vencimento", "status", "forma_pagamento", "observacao"],
+        "required_headers": ["data_lancamento", "descricao", "categoria", "valor", "data_vencimento", "status", "observacao"],
+        "aliases": {"data": "data_lancamento", "vencimento": "data_vencimento"},
+        "model_headers": ["Data", "Descrição", "Categoria", "Valor", "Vencimento", "Status", "Observação"],
+        "sample": ["2026-06-10", "Mercado do mes", "Alimentação", "250.00", "2026-06-15", "Pendente", ""],
     },
     "RECEITAS": {
-        "headers": ["descricao", "categoria", "valor", "data_recebimento", "status", "observacao"],
-        "model_headers": ["Descricao", "Categoria", "Valor", "Data Recebimento", "Status", "Observacao"],
-        "sample": ["Salario", "Outros", "3500.00", "2026-06-05", "Recebido", ""],
+        "headers": ["data_recebimento", "descricao", "categoria", "valor", "status", "observacao"],
+        "required_headers": ["data_recebimento", "descricao", "categoria", "valor", "observacao"],
+        "aliases": {"data": "data_recebimento"},
+        "model_headers": ["Data", "Descrição", "Categoria", "Valor", "Observação"],
+        "sample": ["2026-06-05", "Salario", "Outros", "3500.00", ""],
     },
     "METAS": {
         "headers": ["nome", "descricao", "valor_objetivo", "valor_atual", "data_prevista", "status"],
-        "model_headers": ["Nome", "Descricao", "Valor Objetivo", "Valor Atual", "Data Prevista", "Status"],
-        "sample": ["Reserva de Emergencia", "Meta inicial", "10000.00", "500.00", "2026-12-31", "Em andamento"],
+        "required_headers": ["nome", "descricao", "valor_objetivo", "valor_atual", "data_prevista"],
+        "aliases": {},
+        "model_headers": ["Nome", "Descrição", "Valor Objetivo", "Valor Atual", "Data Prevista"],
+        "sample": ["Reserva de Emergencia", "Meta inicial", "10000.00", "500.00", "2026-12-31"],
     },
     "PARCELADAS": {
         "headers": ["descricao", "categoria", "valor_total", "quantidade_parcelas", "data_primeira_parcela", "status", "forma_pagamento", "observacao"],
-        "model_headers": ["Descricao", "Categoria", "Valor Total", "Quantidade Parcelas", "Data Primeira Parcela", "Status", "Forma Pagamento", "Observacao"],
-        "sample": ["Notebook", "Cartao de Credito", "3000.00", "10", "2026-06-10", "Pendente", "Cartao", ""],
+        "required_headers": ["descricao", "categoria", "valor_total", "quantidade_parcelas", "data_primeira_parcela"],
+        "aliases": {"parcelas": "quantidade_parcelas"},
+        "model_headers": ["Descrição", "Categoria", "Valor Total", "Parcelas", "Data Primeira Parcela"],
+        "sample": ["Notebook", "Cartão de Crédito", "3000.00", "10", "2026-06-10"],
     },
 }
 
@@ -532,6 +540,11 @@ def normalize_header(value):
     text = "".join(char for char in text if unicodedata.category(char) != "Mn")
     text = re.sub(r"[^a-z0-9]+", "_", text)
     return re.sub(r"_+", "_", text).strip("_")
+
+
+def canonical_import_header(sheet_config, value):
+    header = normalize_header(value)
+    return sheet_config.get("aliases", {}).get(header, header)
 
 
 def read_xlsx_workbook(payload):
@@ -1828,18 +1841,21 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             header_index = next((idx for idx, row in enumerate(rows) if any(str(cell).strip() for cell in row)), None)
             if header_index is None:
                 continue
-            headers = [normalize_header(cell) for cell in rows[header_index]]
+            headers = [canonical_import_header(config, cell) for cell in rows[header_index]]
             positions = {}
             for index, header in enumerate(headers):
                 if header and header not in positions:
                     positions[header] = index
             print(f"[importacao] aba {sheet_name}: cabecalhos normalizados={headers}")
-            missing = [header for header in config["headers"] if header not in positions]
+            missing = [header for header in config.get("required_headers", config["headers"]) if header not in positions]
             if missing:
                 errors.append({"sheet": sheet_name, "line": header_index + 1, "error": "Colunas obrigatorias ausentes: " + ", ".join(missing)})
                 continue
             for row_number, values in enumerate(rows[header_index + 1:], start=header_index + 2):
-                mapped = {header: values[positions[header]] if positions[header] < len(values) else "" for header in config["headers"]}
+                mapped = {
+                    header: values[positions[header]] if header in positions and positions[header] < len(values) else ""
+                    for header in config["headers"]
+                }
                 if not any(str(value).strip() for value in mapped.values()):
                     continue
                 try:
