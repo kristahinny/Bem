@@ -282,8 +282,12 @@ async function loadCashflow() {
 async function loadGoals() {
   const data = await api(`/api/goals?${query()}`);
   state.goals = data.goals;
-  $("#goalCount").textContent = data.goals.length;
-  $("#goalsList").innerHTML = data.goals.map((goal) => `
+  renderGoals();
+}
+
+function renderGoals() {
+  $("#goalCount").textContent = state.goals.length;
+  $("#goalsList").innerHTML = state.goals.map((goal) => `
     <article class="goal-item">
       <div class="section-head">
         <div><strong>${escapeHtml(goal.name)}</strong><br><span class="message">${escapeHtml(goal.description || "")}</span></div>
@@ -814,6 +818,8 @@ window.changeGoalAmount = async (id, action) => {
 window.deleteGoal = async (id) => {
   if (!confirm("Excluir esta meta?")) return;
   await api(`/api/goals/${id}`, { method: "DELETE" });
+  state.goals = state.goals.filter((goal) => goal.id !== id);
+  renderGoals();
   toast("Meta excluida.");
   await refreshAfterMutation([loadGoals]);
 };
