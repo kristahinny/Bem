@@ -45,8 +45,18 @@ def main():
     thread.start()
     time.sleep(0.2)
     try:
-        super_login = request("POST", "/api/login", {"username": "krisrosa", "password": "admin123"})
+        super_login = request("POST", "/api/login", {"username": "admin", "password": "admin123"})
         super_token = super_login["token"]
+        super_delete_blocked = False
+        try:
+            request("DELETE", f"/api/users/{super_login['user']['id']}", token=super_token)
+        except urllib.error.HTTPError as exc:
+            super_delete_blocked = exc.code == 400
+        super_toggle_blocked = False
+        try:
+            request("POST", f"/api/users/{super_login['user']['id']}/toggle", {}, super_token)
+        except urllib.error.HTTPError as exc:
+            super_toggle_blocked = exc.code == 400
         public_user = request(
             "POST",
             "/api/register",
@@ -454,6 +464,8 @@ def main():
         principal_login = request("POST", "/api/login", {"username": system_reset["user"]["username"], "password": "admin123"})
 
         assert_true(super_login["user"]["profile"] == "superadmin", "login superadmin falhou")
+        assert_true(super_delete_blocked, "SuperAdmin principal pode ser excluido")
+        assert_true(super_toggle_blocked, "SuperAdmin principal pode ser desativado")
         assert_true(normal_login["user"]["profile"] == "usuario", "cadastro publico nao criou usuario comum")
         assert_true(duplicate_blocked, "usuario duplicado nao foi bloqueado")
         assert_true(blocked, "usuario comum acessou menu/rota de usuarios")

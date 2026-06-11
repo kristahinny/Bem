@@ -748,7 +748,7 @@ async function commitImport() {
     if ($("#importFile")) $("#importFile").value = "";
     $("#importSummary").textContent = "";
     $("#importPreview").innerHTML = "";
-    await refreshAll();
+    await refreshAfterMutation([loadExpenses, loadIncomes, loadGoals]);
   } catch (error) {
     console.error("[importacao] erro ao importar:", error);
     toast(error.message);

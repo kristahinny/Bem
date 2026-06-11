@@ -411,34 +411,45 @@ def init_db():
         for category in DEFAULT_CATEGORIES:
             insert_default_category(conn, category)
 
-        user = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()
-        if not user:
-            salt, password_hash = hash_password("admin123")
-            conn.execute(
-                "INSERT INTO users (username, full_name, password_hash, salt, profile, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("admin", "Administrador", password_hash, salt, "admin", 1, now()),
-            )
-        else:
-            conn.execute("UPDATE users SET profile = 'admin', active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL WHERE username = 'admin'")
-
-        superadmin = conn.execute("SELECT id FROM users WHERE username = ?", (SUPERADMIN_USERNAME,)).fetchone()
-        if not superadmin:
-            salt, password_hash = hash_password(SUPERADMIN_PASSWORD)
-            conn.execute(
-                "INSERT INTO users (username, full_name, password_hash, salt, profile, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (SUPERADMIN_USERNAME, "Kris Rosa", password_hash, salt, "superadmin", 1, now()),
-            )
-        else:
-            conn.execute(
-                "UPDATE users SET profile = 'superadmin', active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL WHERE username = ?",
-                (SUPERADMIN_USERNAME,),
-            )
-
-        admin_id = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()["id"]
-        conn.execute("UPDATE expenses SET user_id = ? WHERE user_id IS NULL", (admin_id,))
-        conn.execute("UPDATE incomes SET user_id = ? WHERE user_id IS NULL", (admin_id,))
+        superadmin = ensure_active_superadmin(conn)
+        conn.execute("UPDATE expenses SET user_id = ? WHERE user_id IS NULL", (superadmin["id"],))
+        conn.execute("UPDATE incomes SET user_id = ? WHERE user_id IS NULL", (superadmin["id"],))
         run_daily_cleanup(conn)
         print("Migração concluída")
+
+
+def ensure_active_superadmin(conn):
+    active = conn.execute(
+        "SELECT * FROM users WHERE profile = 'superadmin' AND active = 1 AND deleted = 0 ORDER BY id LIMIT 1"
+    ).fetchone()
+    if active:
+        print("SuperAdmin ativo encontrado")
+        return active
+
+    salt, password_hash = hash_password("admin123")
+    admin = conn.execute("SELECT * FROM users WHERE username = ?", ("admin",)).fetchone()
+    if admin:
+        conn.execute(
+            """
+            UPDATE users
+            SET full_name = ?, password_hash = ?, salt = ?, profile = 'superadmin',
+                active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL
+            WHERE id = ?
+            """,
+            ("Administrador", password_hash, salt, admin["id"]),
+        )
+        created = conn.execute("SELECT * FROM users WHERE id = ?", (admin["id"],)).fetchone()
+    else:
+        cur = conn.execute(
+            """
+            INSERT INTO users (username, full_name, password_hash, salt, profile, active, deleted, created_at)
+            VALUES (?, ?, ?, ?, 'superadmin', 1, 0, ?)
+            """,
+            ("admin", "Administrador", password_hash, salt, now()),
+        )
+        created = conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
+    print("Nenhum SuperAdmin ativo encontrado. Criado admin padrão.")
+    return created
 
 
 def table_columns(conn, table):
@@ -1639,15 +1650,15 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return
         payload = user_payload(data)
         with connect() as conn:
-            existing = conn.execute("SELECT username, deleted FROM users WHERE id = ?", (user_id,)).fetchone()
+            existing = conn.execute("SELECT username, profile, deleted FROM users WHERE id = ?", (user_id,)).fetchone()
             if not existing:
                 return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
             if existing["deleted"]:
                 return self.send_error_json("Usuario excluido. Restaure antes de editar.", HTTPStatus.BAD_REQUEST)
-            if existing["username"] == SUPERADMIN_USERNAME and payload["username"] != SUPERADMIN_USERNAME:
+            if existing["profile"] == "superadmin" and payload["username"] != existing["username"]:
                 return self.send_error_json("O SuperAdmin principal nao pode ser renomeado")
-            profile = "superadmin" if existing["username"] == SUPERADMIN_USERNAME else payload["profile"]
-            active = 1 if existing["username"] == SUPERADMIN_USERNAME else payload["active"]
+            profile = "superadmin" if existing["profile"] == "superadmin" else payload["profile"]
+            active = 1 if existing["profile"] == "superadmin" else payload["active"]
             try:
                 conn.execute(
                     "UPDATE users SET username = ?, full_name = ?, profile = ?, active = ? WHERE id = ?",
@@ -1680,12 +1691,12 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         if self.require_superadmin() is None:
             return
         with connect() as conn:
-            user = conn.execute("SELECT username, active, deleted FROM users WHERE id = ?", (user_id,)).fetchone()
+            user = conn.execute("SELECT username, profile, active, deleted FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
             if user["deleted"]:
                 return self.send_error_json("Usuario excluido. Restaure antes de alterar o status.", HTTPStatus.BAD_REQUEST)
-            if user["username"] == SUPERADMIN_USERNAME:
+            if user["profile"] == "superadmin":
                 return self.send_error_json("O SuperAdmin principal nao pode ser desativado")
             new_active = 0 if user["active"] else 1
             conn.execute("UPDATE users SET active = ? WHERE id = ?", (new_active, user_id))
@@ -1698,10 +1709,10 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         if admin is None:
             return
         with connect() as conn:
-            user = conn.execute("SELECT username, deleted FROM users WHERE id = ?", (user_id,)).fetchone()
+            user = conn.execute("SELECT username, profile, deleted FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 return self.send_error_json("Usuario nao encontrado", HTTPStatus.NOT_FOUND)
-            if user["username"] == SUPERADMIN_USERNAME:
+            if user["profile"] == "superadmin":
                 return self.send_error_json("O SuperAdmin principal nao pode ser excluido")
             if user["deleted"]:
                 return self.send_error_json("Usuario ja esta excluido")
@@ -2467,21 +2478,6 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     }
                 )
         self.send_json({"cashflow": rows})
-
-    def handle_import_template(self):
-        rows = [
-            ["tipo", "descricao_ou_nome", "categoria", "valor", "data", "status", "observacao"],
-            ["despesa", "Consulta", "Saúde", "200.00", "2026-06-15", "Pendente", "Especialidade"],
-            ["receita", "Salario", "Salario", "3500.00", "2026-06-05", "Recebido", ""],
-            ["meta", "Reserva de Emergencia", "", "10000.00", "2026-12-31", "Ativa", "Meta principal"],
-        ]
-        payload = csv_string(rows).encode("utf-8-sig")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/csv; charset=utf-8")
-        self.send_header("Content-Disposition", "attachment; filename=modelo-importacao-financeira.csv")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
 
     def validate_import_rows_legacy_csv(self, rows):
         valid = []
