@@ -45,7 +45,7 @@ def main():
     thread.start()
     time.sleep(0.2)
     try:
-        super_login = request("POST", "/api/login", {"username": "admin", "password": "admin123"})
+        super_login = request("POST", "/api/login", {"username": "krisrosa", "password": "admin123"})
         super_token = super_login["token"]
         super_delete_blocked = False
         try:
