@@ -173,7 +173,7 @@ async function loadDashboard() {
   $("#cardMonthBalance").textContent = money(data.cards.month_balance);
   $("#cardExpected").textContent = money(data.cards.expected_balance);
   $("#cardReal").textContent = money(data.cards.real_balance);
-  $("#cardGoals").textContent = money(data.cards.goals_total);
+  $("#cardGoals").textContent = `${money(data.cards.goals_total)} (${data.cards.goals_progress || 0}%)`;
   $("#cardFutureInstallments").textContent = money(data.cards.future_installments);
   $("#cardOverdue").textContent = data.cards.overdue_count;
   $("#cardUpcoming").textContent = data.cards.upcoming_count;
@@ -477,8 +477,7 @@ async function saveExpense(event) {
   revealSavedExpense(data);
   clearForm(form);
   toast("Conta salva.");
-  await loadExpenses();
-  if (state.view === "expenses") await loadDashboard().catch(() => {});
+  await refreshAfterMutation([loadExpenses]);
 }
 
 async function saveIncome(event) {
@@ -492,8 +491,7 @@ async function saveIncome(event) {
   revealSavedIncome(data);
   clearForm(form);
   toast("Receita salva.");
-  await loadIncomes();
-  if (state.view === "incomes") await loadDashboard().catch(() => {});
+  await refreshAfterMutation([loadIncomes]);
 }
 
 async function saveUser(event) {
@@ -519,7 +517,7 @@ async function saveGoal(event) {
   await api(id ? `/api/goals/${id}` : "/api/goals", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
   clearForm(form);
   toast("Meta salva.");
-  await loadGoals();
+  await refreshAfterMutation([loadGoals]);
 }
 
 async function saveCategory(event) {

@@ -657,6 +657,10 @@ def table_exists(conn, table):
     return row is not None
 
 
+def not_deleted_filter(conn, table):
+    return " AND deleted = 0" if "deleted" in table_columns(conn, table) else ""
+
+
 def set_maintenance_setting(conn, key, value):
     conn.execute(
         """
@@ -1600,35 +1604,72 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         today = today_iso()
         scope_sql, scope_values = owned_update_suffix(user, params)
         with connect() as conn:
+            expense_deleted_filter = not_deleted_filter(conn, "expenses")
+            income_deleted_filter = not_deleted_filter(conn, "incomes")
+            goal_deleted_filter = not_deleted_filter(conn, "goals")
             expenses = conn.execute(
-                f"SELECT * FROM expenses WHERE active = 1 AND due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date",
+                f"""
+                SELECT * FROM expenses
+                WHERE active = 1
+                  AND cancelled = 0
+                  AND status != 'Cancelada'
+                  {expense_deleted_filter}
+                  AND due_date >= ? AND due_date < ?{scope_sql}
+                ORDER BY due_date
+                """,
                 (start, end, *scope_values),
             ).fetchall()
             incomes = conn.execute(
-                f"SELECT * FROM incomes WHERE active = 1 AND cancelled = 0 AND receipt_date >= ? AND receipt_date < ?{scope_sql} ORDER BY receipt_date",
+                f"""
+                SELECT * FROM incomes
+                WHERE active = 1
+                  AND cancelled = 0
+                  AND status != 'Cancelada'
+                  {income_deleted_filter}
+                  AND receipt_date >= ? AND receipt_date < ?{scope_sql}
+                ORDER BY receipt_date
+                """,
                 (start, end, *scope_values),
             ).fetchall()
-            upcoming = conn.execute(
+            overdue_rows = conn.execute(
                 f"""
                 SELECT * FROM expenses
-                WHERE active = 1 AND status != 'Pago' AND cancelled = 0 AND due_date >= ?{scope_sql}
-                ORDER BY due_date LIMIT 6
+                WHERE active = 1
+                  AND status != 'Pago'
+                  AND status != 'Cancelada'
+                  AND cancelled = 0
+                  {expense_deleted_filter}
+                  AND due_date < ?{scope_sql}
+                ORDER BY due_date
+                """,
+                (today, *scope_values),
+            ).fetchall()
+            upcoming_rows = conn.execute(
+                f"""
+                SELECT * FROM expenses
+                WHERE active = 1
+                  AND status != 'Pago'
+                  AND status != 'Cancelada'
+                  AND cancelled = 0
+                  {expense_deleted_filter}
+                  AND due_date >= ?{scope_sql}
+                ORDER BY due_date
                 """,
                 (today, *scope_values),
             ).fetchall()
             goals = conn.execute(
-                f"SELECT * FROM goals WHERE active = 1{scope_sql}",
+                f"SELECT * FROM goals WHERE active = 1 AND status != 'Cancelada'{goal_deleted_filter}{scope_sql}",
                 tuple(scope_values),
             ).fetchall()
-            deleted_filter = " AND deleted = 0" if "deleted" in table_columns(conn, "expenses") else ""
             future_installments = conn.execute(
                 f"""
                 SELECT COALESCE(SUM(amount), 0) AS total
                 FROM expenses
                 WHERE active = 1
                   AND status != 'Pago'
+                  AND status != 'Cancelada'
                   AND cancelled = 0
-                  {deleted_filter}
+                  {expense_deleted_filter}
                   AND installment_group IS NOT NULL
                   AND installment_group != ''
                   AND installment_number IS NOT NULL
@@ -1638,14 +1679,14 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 (today, *scope_values),
             ).fetchone()
 
-        active_expenses = [row for row in expenses if not row["cancelled"]]
-        total_pending = sum(row["amount"] for row in active_expenses if row["status"] != "Pago")
-        total_paid = sum(row["amount"] for row in active_expenses if row["status"] == "Pago")
+        total_pending = sum(row["amount"] for row in expenses if row["status"] != "Pago")
+        total_paid = sum(row["amount"] for row in expenses if row["status"] == "Pago")
         total_income = sum(row["amount"] for row in incomes)
         real_income = sum(row["amount"] for row in incomes if row["status"] == "Recebido")
-        total_expenses = sum(row["amount"] for row in active_expenses)
+        total_expenses = sum(row["amount"] for row in expenses)
         goals_total = sum(row["current_amount"] for row in goals)
-        overdue = [row_to_dict(row) for row in active_expenses if row["status"] != "Pago" and row["due_date"] < today]
+        goals_target_total = sum(row["target_amount"] for row in goals)
+        goals_progress = 0 if goals_target_total <= 0 else min(round((goals_total / goals_target_total) * 100, 2), 100)
         self.send_json(
             {
                 "period": selected,
@@ -1658,12 +1699,13 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     "expected_balance": round(total_income - total_pending - total_paid, 2),
                     "real_balance": round(real_income - total_paid, 2),
                     "goals_total": round(goals_total, 2),
+                    "goals_progress": goals_progress,
                     "future_installments": round(float(future_installments["total"] or 0), 2),
-                    "overdue_count": len(overdue),
-                    "upcoming_count": len(upcoming),
+                    "overdue_count": len(overdue_rows),
+                    "upcoming_count": len(upcoming_rows),
                 },
-                "overdue": overdue[:6],
-                "upcoming": [row_to_dict(row) for row in upcoming],
+                "overdue": [row_to_dict(row) for row in overdue_rows[:6]],
+                "upcoming": [row_to_dict(row) for row in upcoming_rows[:6]],
             }
         )
 
@@ -1674,9 +1716,9 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         normalize_overdue_expenses()
         where, values = filters_to_sql(params, "expenses")
         if where:
-            where += " AND active = 1 AND cancelled = 0"
+            where += " AND active = 1 AND cancelled = 0 AND status != 'Cancelada'"
         else:
-            where = " WHERE active = 1 AND cancelled = 0"
+            where = " WHERE active = 1 AND cancelled = 0 AND status != 'Cancelada'"
         where, values = apply_user_scope(where, values, user, params)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM expenses{where} ORDER BY due_date DESC, id DESC", values).fetchall()
@@ -1687,7 +1729,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         if user is None:
             return
         where, values = filters_to_sql(params, "incomes")
-        where = (where + " AND active = 1 AND cancelled = 0") if where else " WHERE active = 1 AND cancelled = 0"
+        where = (where + " AND active = 1 AND cancelled = 0 AND status != 'Cancelada'") if where else " WHERE active = 1 AND cancelled = 0 AND status != 'Cancelada'"
         where, values = apply_user_scope(where, values, user, params)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM incomes{where} ORDER BY receipt_date DESC, id DESC", values).fetchall()
@@ -1697,7 +1739,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         user = self.require_user()
         if user is None:
             return
-        where = " WHERE active = 1"
+        where = " WHERE active = 1 AND status != 'Cancelada'"
         values = []
         if user["profile"] == "superadmin" and params.get("user_id"):
             where += " AND user_id = ?"
@@ -1913,7 +1955,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         user = self.require_user()
         if user is None:
             return
-        where, values = apply_user_scope(" WHERE active = 1", [], user, params)
+        where, values = apply_user_scope(" WHERE active = 1 AND status != 'Cancelada'", [], user, params)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM goals{where} ORDER BY target_date, id DESC", values).fetchall()
         self.send_json({"goals": [enrich_goal(row) for row in rows]})
@@ -2041,29 +2083,41 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         user = self.require_user()
         if user is None:
             return
-        months = list(iter_months(date.today().replace(day=1), 12))
+        selected_year = int(params.get("year") or date.today().year)
+        months = [f"{selected_year}-{month:02d}" for month in range(1, 13)]
         scope_sql, scope_values = owned_update_suffix(user, params)
         with connect() as conn:
+            expense_deleted_filter = not_deleted_filter(conn, "expenses")
+            income_deleted_filter = not_deleted_filter(conn, "incomes")
+            goal_deleted_filter = not_deleted_filter(conn, "goals")
             expenses = conn.execute(
                 f"""
                 SELECT substr(due_date, 1, 7) AS month, COALESCE(SUM(amount), 0) AS total
                 FROM expenses
-                WHERE active = 1 AND cancelled = 0 AND due_date >= ?{scope_sql}
+                WHERE active = 1
+                  AND cancelled = 0
+                  AND status != 'Cancelada'
+                  {expense_deleted_filter}
+                  AND due_date >= ? AND due_date < ?{scope_sql}
                 GROUP BY substr(due_date, 1, 7)
                 """,
-                (months[0] + "-01", *scope_values),
+                (months[0] + "-01", f"{selected_year + 1}-01-01", *scope_values),
             ).fetchall()
             incomes = conn.execute(
                 f"""
                 SELECT substr(receipt_date, 1, 7) AS month, COALESCE(SUM(amount), 0) AS total
                 FROM incomes
-                WHERE active = 1 AND cancelled = 0 AND receipt_date >= ?{scope_sql}
+                WHERE active = 1
+                  AND cancelled = 0
+                  AND status != 'Cancelada'
+                  {income_deleted_filter}
+                  AND receipt_date >= ? AND receipt_date < ?{scope_sql}
                 GROUP BY substr(receipt_date, 1, 7)
                 """,
-                (months[0] + "-01", *scope_values),
+                (months[0] + "-01", f"{selected_year + 1}-01-01", *scope_values),
             ).fetchall()
             goals = conn.execute(
-                f"SELECT COALESCE(SUM(current_amount), 0) AS total FROM goals WHERE active = 1{scope_sql}",
+                f"SELECT COALESCE(SUM(current_amount), 0) AS total FROM goals WHERE active = 1 AND status != 'Cancelada'{goal_deleted_filter}{scope_sql}",
                 tuple(scope_values),
             ).fetchone()
         expense_map = {row["month"]: row["total"] for row in expenses}
@@ -2086,19 +2140,22 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         scope_sql, scope_values = owned_update_suffix(user, params)
         rows = []
         with connect() as conn:
+            expense_deleted_filter = not_deleted_filter(conn, "expenses")
+            income_deleted_filter = not_deleted_filter(conn, "incomes")
+            goal_deleted_filter = not_deleted_filter(conn, "goals")
             for month in months:
                 year, month_num = map(int, month.split("-"))
                 start, end = month_range(year, month_num)
                 income = conn.execute(
-                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM incomes WHERE active = 1 AND cancelled = 0 AND receipt_date >= ? AND receipt_date < ?{scope_sql}",
+                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM incomes WHERE active = 1 AND cancelled = 0 AND status != 'Cancelada'{income_deleted_filter} AND receipt_date >= ? AND receipt_date < ?{scope_sql}",
                     (start, end, *scope_values),
                 ).fetchone()["total"]
                 expense = conn.execute(
-                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE active = 1 AND cancelled = 0 AND due_date >= ? AND due_date < ?{scope_sql}",
+                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE active = 1 AND cancelled = 0 AND status != 'Cancelada'{expense_deleted_filter} AND due_date >= ? AND due_date < ?{scope_sql}",
                     (start, end, *scope_values),
                 ).fetchone()["total"]
                 goals = conn.execute(
-                    f"SELECT COALESCE(SUM(current_amount), 0) AS total FROM goals WHERE active = 1 AND substr(updated_at, 1, 7) = ?{scope_sql}",
+                    f"SELECT COALESCE(SUM(current_amount), 0) AS total FROM goals WHERE active = 1 AND status != 'Cancelada'{goal_deleted_filter} AND substr(updated_at, 1, 7) = ?{scope_sql}",
                     (month, *scope_values),
                 ).fetchone()["total"]
                 rows.append(
@@ -2596,12 +2653,14 @@ def build_report(params, user):
     movement_type = params.get("type", "")
     scope_sql, scope_values = owned_update_suffix(user, params)
     with connect() as conn:
+        expense_deleted_filter = not_deleted_filter(conn, "expenses")
+        income_deleted_filter = not_deleted_filter(conn, "incomes")
         expenses = [] if movement_type == "Receita" else [row_to_dict(row) for row in conn.execute(
-            f"SELECT * FROM expenses WHERE active = 1 AND cancelled = 0 AND due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date, id",
+            f"SELECT * FROM expenses WHERE active = 1 AND cancelled = 0 AND status != 'Cancelada'{expense_deleted_filter} AND due_date >= ? AND due_date < ?{scope_sql} ORDER BY due_date, id",
             (start, end, *scope_values),
         ).fetchall()]
         incomes = [] if movement_type == "Despesa" else [row_to_dict(row) for row in conn.execute(
-            f"SELECT * FROM incomes WHERE active = 1 AND cancelled = 0 AND receipt_date >= ? AND receipt_date < ?{scope_sql} ORDER BY receipt_date, id",
+            f"SELECT * FROM incomes WHERE active = 1 AND cancelled = 0 AND status != 'Cancelada'{income_deleted_filter} AND receipt_date >= ? AND receipt_date < ?{scope_sql} ORDER BY receipt_date, id",
             (start, end, *scope_values),
         ).fetchall()]
 
