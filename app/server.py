@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import sqlite3
+import unicodedata
 import urllib.parse
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
@@ -43,18 +44,22 @@ DEFAULT_CATEGORIES = [
 IMPORT_SHEETS = {
     "DESPESAS": {
         "headers": ["descricao", "categoria", "valor", "data_vencimento", "status", "forma_pagamento", "observacao"],
+        "model_headers": ["Descricao", "Categoria", "Valor", "Data Vencimento", "Status", "Forma Pagamento", "Observacao"],
         "sample": ["Mercado do mes", "Alimentacao", "250.00", "2026-06-15", "Pendente", "Pix", ""],
     },
     "RECEITAS": {
         "headers": ["descricao", "categoria", "valor", "data_recebimento", "status", "observacao"],
+        "model_headers": ["Descricao", "Categoria", "Valor", "Data Recebimento", "Status", "Observacao"],
         "sample": ["Salario", "Outros", "3500.00", "2026-06-05", "Recebido", ""],
     },
     "METAS": {
         "headers": ["nome", "descricao", "valor_objetivo", "valor_atual", "data_prevista", "status"],
+        "model_headers": ["Nome", "Descricao", "Valor Objetivo", "Valor Atual", "Data Prevista", "Status"],
         "sample": ["Reserva de Emergencia", "Meta inicial", "10000.00", "500.00", "2026-12-31", "Em andamento"],
     },
     "PARCELADAS": {
         "headers": ["descricao", "categoria", "valor_total", "quantidade_parcelas", "data_primeira_parcela", "status", "forma_pagamento", "observacao"],
+        "model_headers": ["Descricao", "Categoria", "Valor Total", "Quantidade Parcelas", "Data Primeira Parcela", "Status", "Forma Pagamento", "Observacao"],
         "sample": ["Notebook", "Cartao de Credito", "3000.00", "10", "2026-06-10", "Pendente", "Cartao", ""],
     },
 }
@@ -316,6 +321,8 @@ CREATE TABLE IF NOT EXISTS goals (
 def init_db():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
+        if USE_POSTGRES:
+            print("Conectado ao PostgreSQL")
         conn.executescript(POSTGRES_SCHEMA if USE_POSTGRES else SQLITE_SCHEMA)
         ensure_user_columns(conn)
         ensure_category_columns(conn)
@@ -350,6 +357,7 @@ def init_db():
         admin_id = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()["id"]
         conn.execute("UPDATE expenses SET user_id = ? WHERE user_id IS NULL", (admin_id,))
         conn.execute("UPDATE incomes SET user_id = ? WHERE user_id IS NULL", (admin_id,))
+        print("Migração concluída")
 
 
 def table_columns(conn, table):
@@ -418,7 +426,7 @@ def ensure_goal_table(conn):
             status TEXT NOT NULL DEFAULT 'Em andamento',
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
         """
         if USE_POSTGRES
@@ -515,7 +523,15 @@ def build_xlsx(sheets):
 
 
 def build_import_template():
-    return build_xlsx({name: [config["headers"], config["sample"]] for name, config in IMPORT_SHEETS.items()})
+    return build_xlsx({name: [config.get("model_headers", config["headers"]), config["sample"]] for name, config in IMPORT_SHEETS.items()})
+
+
+def normalize_header(value):
+    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(char for char in text if unicodedata.category(char) != "Mn")
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return re.sub(r"_+", "_", text).strip("_")
 
 
 def read_xlsx_workbook(payload):
@@ -538,7 +554,16 @@ def read_xlsx_workbook(payload):
     for worksheet in workbook.worksheets:
         rows = []
         for row in worksheet.iter_rows(values_only=True):
-            values = ["" if value is None else str(value).strip() for value in row]
+            values = []
+            for value in row:
+                if value is None:
+                    values.append("")
+                elif isinstance(value, datetime):
+                    values.append(value.date().isoformat())
+                elif isinstance(value, date):
+                    values.append(value.isoformat())
+                else:
+                    values.append(str(value).strip())
             while values and values[-1] == "":
                 values.pop()
             rows.append(values)
@@ -1803,13 +1828,18 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             header_index = next((idx for idx, row in enumerate(rows) if any(str(cell).strip() for cell in row)), None)
             if header_index is None:
                 continue
-            headers = [str(cell).strip().lower() for cell in rows[header_index]]
-            missing = [header for header in config["headers"] if header not in headers]
+            headers = [normalize_header(cell) for cell in rows[header_index]]
+            positions = {}
+            for index, header in enumerate(headers):
+                if header and header not in positions:
+                    positions[header] = index
+            print(f"[importacao] aba {sheet_name}: cabecalhos normalizados={headers}")
+            missing = [header for header in config["headers"] if header not in positions]
             if missing:
                 errors.append({"sheet": sheet_name, "line": header_index + 1, "error": "Colunas obrigatorias ausentes: " + ", ".join(missing)})
                 continue
             for row_number, values in enumerate(rows[header_index + 1:], start=header_index + 2):
-                mapped = {header: values[headers.index(header)] if headers.index(header) < len(values) else "" for header in config["headers"]}
+                mapped = {header: values[positions[header]] if positions[header] < len(values) else "" for header in config["headers"]}
                 if not any(str(value).strip() for value in mapped.values()):
                     continue
                 try:

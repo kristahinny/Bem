@@ -168,20 +168,20 @@ def main():
         import_workbook = server.build_xlsx(
             {
                 "DESPESAS": [
-                    server.IMPORT_SHEETS["DESPESAS"]["headers"],
+                    ["Descrição", "Categoria", "Valor", "Data Vencimento", "Status", "Forma Pagamento", "Observação"],
                     ["Despesa importada", "Moradia", "100", "2026-06-20", "Pendente", "Pix", ""],
                     ["", "", "", "", "", "", ""],
                 ],
                 "RECEITAS": [
-                    server.IMPORT_SHEETS["RECEITAS"]["headers"],
+                    ["DESCRIÇÃO", "Categoria", "Valor", "Data Recebimento", "Status", "Observação"],
                     ["Receita importada", "Outros", "200", "2026-06-21", "Recebido", ""],
                 ],
                 "METAS": [
-                    server.IMPORT_SHEETS["METAS"]["headers"],
+                    ["Nome", "Descricao", "Valor Objetivo", "Valor Atual", "Data Prevista", "Status"],
                     ["Meta importada", "Teste de meta", "1000", "100", "2026-12-31", "Em andamento"],
                 ],
                 "PARCELADAS": [
-                    server.IMPORT_SHEETS["PARCELADAS"]["headers"],
+                    ["Descricao", "Categoria", "Valor Total", "Quantidade Parcelas", "Data Primeira Parcela", "Status", "Forma Pagamento", "Observacao"],
                     ["Compra parcelada importada", "Cartao de Credito", "600", "2", "2026-06-25", "Pendente", "Cartao", ""],
                 ],
             }
