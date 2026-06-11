@@ -507,39 +507,85 @@ function importRowAmount(row) {
   return row.amount || row.target_amount || row.total_amount || 0;
 }
 
-async function previewImport(event) {
-  const file = event.currentTarget.files?.[0];
-  if (!file) return;
-  if (!file.name.toLowerCase().endsWith(".xlsx")) {
-    toast("Selecione o modelo Excel .xlsx.");
-    event.currentTarget.value = "";
-    return;
-  }
-  state.importPayload = await parseImportFile(file);
-  const data = await api("/api/import/preview", { method: "POST", body: JSON.stringify(state.importPayload) });
-  state.importRows = data.valid;
-  $("#importSummary").textContent = `${data.valid.length} linhas validas, ${data.errors.length} erros encontrados.`;
+function renderImportPreview(data) {
+  state.importRows = data.valid || [];
+  $("#importSummary").textContent = `${state.importRows.length} linhas validas, ${data.errors.length} erros encontrados.`;
   $("#importPreview").innerHTML = [
-    ...data.valid.slice(0, 20).map((row) => `<tr><td>OK</td><td>${escapeHtml(row.sheet)} linha ${row.line}</td><td>${escapeHtml(row.tipo)}</td><td>${escapeHtml(importRowTitle(row))}</td><td>${money(importRowAmount(row))}</td></tr>`),
+    ...state.importRows.slice(0, 20).map((row) => `<tr><td>OK</td><td>${escapeHtml(row.sheet)} linha ${row.line}</td><td>${escapeHtml(row.tipo)}</td><td>${escapeHtml(importRowTitle(row))}</td><td>${money(importRowAmount(row))}</td></tr>`),
     ...data.errors.map((err) => `<tr><td>Erro</td><td>${escapeHtml(err.sheet || "")} linha ${err.line}</td><td colspan="3">${escapeHtml(err.error)}</td></tr>`),
   ].join("");
 }
 
-async function commitImport() {
-  if (!state.importRows.length) {
-    toast("Selecione uma planilha primeiro.");
-    return;
+async function loadImportPreviewFromInput(input) {
+  console.log("[importacao] input:", input);
+  console.log("[importacao] input.files:", input?.files);
+  console.log("[importacao] input.files.length:", input?.files?.length || 0);
+  const file = input?.files?.[0];
+  console.log("[importacao] arquivo selecionado:", file);
+  if (!file) return false;
+  const debugFormData = new FormData();
+  debugFormData.append("file", file);
+  console.log("[importacao] FormData debug:", Array.from(debugFormData.entries()));
+  if (!file.name.toLowerCase().endsWith(".xlsx")) {
+    toast("Selecione o modelo Excel .xlsx.");
+    input.value = "";
+    state.importRows = [];
+    state.importPayload = null;
+    return false;
   }
-  const payload = { rows: state.importRows };
-  if (state.user?.profile === "superadmin" && $("#filterUser")?.value) payload.user_id = $("#filterUser").value;
-  const data = await api("/api/import/commit", { method: "POST", body: JSON.stringify(payload) });
-  toast(`${data.imported} registros importados. ${data.skipped || 0} duplicados ignorados.`);
-  state.importRows = [];
-  state.importPayload = null;
-  if ($("#importFile")) $("#importFile").value = "";
-  $("#importSummary").textContent = "";
-  $("#importPreview").innerHTML = "";
-  await refreshAll();
+  state.importPayload = await parseImportFile(file);
+  console.log("[importacao] payload preparado:", { filename: state.importPayload.filename, content_base64_length: state.importPayload.content_base64.length });
+  const data = await api("/api/import/preview", { method: "POST", body: JSON.stringify(state.importPayload) });
+  console.log("[importacao] preview retornado:", data);
+  renderImportPreview(data);
+  return true;
+}
+
+async function previewImport(event) {
+  try {
+    const loaded = await loadImportPreviewFromInput(event.currentTarget);
+    if (!loaded) {
+      $("#importSummary").textContent = "";
+      $("#importPreview").innerHTML = "";
+    }
+  } catch (error) {
+    console.error("[importacao] erro na previa:", error);
+    state.importRows = [];
+    $("#importSummary").textContent = error.message;
+    $("#importPreview").innerHTML = "";
+  }
+}
+
+async function commitImport() {
+  try {
+    const input = $("#importFile");
+    console.log("[importacao] clique importar - input.files:", input?.files);
+    console.log("[importacao] clique importar - input.files.length:", input?.files?.length || 0);
+    if (!state.importRows.length) {
+      if (input?.files?.length) {
+        console.log("[importacao] sem linhas em memoria; refazendo previa a partir do input.");
+        await loadImportPreviewFromInput(input);
+      }
+    }
+    if (!state.importRows.length) {
+      toast(input?.files?.length ? "Nenhuma linha valida encontrada. Verifique a previa e os erros da planilha." : "Selecione uma planilha primeiro.");
+      return;
+    }
+    const payload = { rows: state.importRows };
+    if (state.user?.profile === "superadmin" && $("#filterUser")?.value) payload.user_id = $("#filterUser").value;
+    const data = await api("/api/import/commit", { method: "POST", body: JSON.stringify(payload) });
+    console.log("[importacao] commit retornado:", data);
+    toast(`${data.imported} registros importados. ${data.skipped || 0} duplicados ignorados.`);
+    state.importRows = [];
+    state.importPayload = null;
+    if ($("#importFile")) $("#importFile").value = "";
+    $("#importSummary").textContent = "";
+    $("#importPreview").innerHTML = "";
+    await refreshAll();
+  } catch (error) {
+    console.error("[importacao] erro ao importar:", error);
+    toast(error.message);
+  }
 }
 
 async function registerAccount(event) {
