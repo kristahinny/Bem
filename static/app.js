@@ -176,6 +176,8 @@ async function loadDashboard() {
   $("#cardReal").textContent = money(data.cards.real_balance);
   $("#cardGoals").textContent = `${money(data.cards.goals_total)} (${data.cards.goals_progress || 0}%)`;
   $("#cardFutureInstallments").textContent = money(data.cards.future_installments);
+  const futureIncomesCard = $("#cardFutureIncomes");
+  if (futureIncomesCard) futureIncomesCard.textContent = money(data.cards.future_incomes);
   $("#cardOverdue").textContent = data.cards.overdue_count;
   $("#cardUpcoming").textContent = data.cards.upcoming_count;
   renderMiniList("#overdueList", data.overdue);

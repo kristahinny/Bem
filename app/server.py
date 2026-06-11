@@ -487,8 +487,18 @@ def ensure_financial_columns(conn):
         conn.execute("ALTER TABLE incomes ADD COLUMN user_id INTEGER")
     if "active" not in expense_columns:
         conn.execute("ALTER TABLE expenses ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        expense_columns = table_columns(conn, "expenses")
     if "active" not in income_columns:
         conn.execute("ALTER TABLE incomes ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        income_columns = table_columns(conn, "incomes")
+    for column, definition in {
+        "deleted": "INTEGER NOT NULL DEFAULT 0",
+        "deleted_at": "TEXT",
+    }.items():
+        if column not in expense_columns:
+            conn.execute(f"ALTER TABLE expenses ADD COLUMN {column} {definition}")
+        if column not in income_columns:
+            conn.execute(f"ALTER TABLE incomes ADD COLUMN {column} {definition}")
     for column, definition in {
         "recurring_group": "TEXT",
         "recurring_number": "INTEGER",
@@ -550,6 +560,8 @@ def ensure_goal_table(conn):
         "target_date": "TEXT",
         "status": "TEXT NOT NULL DEFAULT 'Em andamento'",
         "active": "INTEGER NOT NULL DEFAULT 1",
+        "deleted": "INTEGER NOT NULL DEFAULT 0",
+        "deleted_at": "TEXT",
         "created_at": "TEXT",
         "updated_at": "TEXT",
     }.items():
@@ -1052,11 +1064,16 @@ def owned_update_suffix(user, params=None):
 
 def normalize_overdue_expenses():
     with connect() as conn:
+        deleted_filter = not_deleted_filter(conn, "expenses")
         conn.execute(
-            """
+            f"""
             UPDATE expenses
             SET status = 'Vencido', updated_at = ?
-            WHERE status = 'Pendente' AND due_date < ?
+            WHERE active = 1
+              AND cancelled = 0
+              {deleted_filter}
+              AND status = 'Pendente'
+              AND due_date < ?
             """,
             (now(), today_iso()),
         )
@@ -1747,11 +1764,24 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 """,
                 (today, *scope_values),
             ).fetchone()
+            future_incomes = conn.execute(
+                f"""
+                SELECT COALESCE(SUM(amount), 0) AS total
+                FROM incomes
+                WHERE active = 1
+                  AND status != 'Recebido'
+                  AND status != 'Cancelada'
+                  AND cancelled = 0
+                  {income_deleted_filter}
+                  AND receipt_date > ?{scope_sql}
+                """,
+                (today, *scope_values),
+            ).fetchone()
 
         total_pending = sum(row["amount"] for row in expenses if row["status"] != "Pago")
         total_paid = sum(row["amount"] for row in expenses if row["status"] == "Pago")
-        total_income = sum(row["amount"] for row in incomes)
-        real_income = sum(row["amount"] for row in incomes if row["status"] == "Recebido")
+        total_income = sum(row["amount"] for row in incomes if row["status"] == "Recebido")
+        expected_income = sum(row["amount"] for row in incomes)
         total_expenses = sum(row["amount"] for row in expenses)
         goals_total = sum(row["current_amount"] for row in goals)
         goals_target_total = sum(row["target_amount"] for row in goals)
@@ -1765,11 +1795,12 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     "total_income": round(total_income, 2),
                     "total_expenses": round(total_expenses, 2),
                     "month_balance": round(total_income - total_expenses, 2),
-                    "expected_balance": round(total_income - total_pending - total_paid, 2),
-                    "real_balance": round(real_income - total_paid, 2),
+                    "expected_balance": round(expected_income - total_expenses, 2),
+                    "real_balance": round(total_income - total_paid, 2),
                     "goals_total": round(goals_total, 2),
                     "goals_progress": goals_progress,
                     "future_installments": round(float(future_installments["total"] or 0), 2),
+                    "future_incomes": round(float(future_incomes["total"] or 0), 2),
                     "overdue_count": len(overdue_rows),
                     "upcoming_count": len(upcoming_rows),
                 },
@@ -1788,8 +1819,11 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             where += " AND active = 1 AND cancelled = 0 AND status != 'Cancelada'"
         else:
             where = " WHERE active = 1 AND cancelled = 0 AND status != 'Cancelada'"
-        where, values = apply_user_scope(where, values, user, params)
         with connect() as conn:
+            deleted_filter = not_deleted_filter(conn, "expenses")
+            if deleted_filter:
+                where += deleted_filter
+            where, values = apply_user_scope(where, values, user, params)
             rows = conn.execute(f"SELECT * FROM expenses{where} ORDER BY due_date DESC, id DESC", values).fetchall()
         self.send_json({"expenses": [row_to_dict(row) for row in rows]})
 
@@ -1799,26 +1833,13 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return
         where, values = filters_to_sql(params, "incomes")
         where = (where + " AND active = 1 AND cancelled = 0 AND status != 'Cancelada'") if where else " WHERE active = 1 AND cancelled = 0 AND status != 'Cancelada'"
-        where, values = apply_user_scope(where, values, user, params)
         with connect() as conn:
+            deleted_filter = not_deleted_filter(conn, "incomes")
+            if deleted_filter:
+                where += deleted_filter
+            where, values = apply_user_scope(where, values, user, params)
             rows = conn.execute(f"SELECT * FROM incomes{where} ORDER BY receipt_date DESC, id DESC", values).fetchall()
         self.send_json({"incomes": [row_to_dict(row) for row in rows]})
-
-    def handle_list_goals(self, params):
-        user = self.require_user()
-        if user is None:
-            return
-        where = " WHERE active = 1 AND status != 'Cancelada'"
-        values = []
-        if user["profile"] == "superadmin" and params.get("user_id"):
-            where += " AND user_id = ?"
-            values.append(params.get("user_id"))
-        elif user["profile"] != "superadmin":
-            where += " AND user_id = ?"
-            values.append(user["id"])
-        with connect() as conn:
-            rows = conn.execute(f"SELECT * FROM goals{where} ORDER BY target_date, id", values).fetchall()
-        self.send_json({"goals": [row_to_dict(row) for row in rows]})
 
     def handle_create_expense(self, data):
         user = self.require_user()
@@ -2024,8 +2045,12 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         user = self.require_user()
         if user is None:
             return
-        where, values = apply_user_scope(" WHERE active = 1 AND status != 'Cancelada'", [], user, params)
         with connect() as conn:
+            where = " WHERE active = 1 AND status != 'Cancelada'"
+            deleted_filter = not_deleted_filter(conn, "goals")
+            if deleted_filter:
+                where += deleted_filter
+            where, values = apply_user_scope(where, [], user, params)
             rows = conn.execute(f"SELECT * FROM goals{where} ORDER BY target_date, id DESC", values).fetchall()
         self.send_json({"goals": [enrich_goal(row) for row in rows]})
 
@@ -2107,7 +2132,13 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return
         scope_sql, scope_values = owned_update_suffix(user)
         with connect() as conn:
-            cur = conn.execute(f"UPDATE {table} SET active = 0, updated_at = ? WHERE id = ?{scope_sql}", (now(), row_id, *scope_values))
+            if "deleted" in table_columns(conn, table):
+                cur = conn.execute(
+                    f"UPDATE {table} SET active = 0, deleted = 1, deleted_at = ?, updated_at = ? WHERE id = ?{scope_sql}",
+                    (now(), now(), row_id, *scope_values),
+                )
+            else:
+                cur = conn.execute(f"UPDATE {table} SET active = 0, updated_at = ? WHERE id = ?{scope_sql}", (now(), row_id, *scope_values))
         if cur.rowcount == 0:
             return self.send_error_json("Registro nao encontrado", HTTPStatus.NOT_FOUND)
         self.send_json({"success": True, "message": "Registro excluído com sucesso", "id": row_id, "table": table})

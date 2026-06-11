@@ -141,6 +141,23 @@ def main():
             },
             normal_login["token"],
         )
+        pending_income = request(
+            "POST",
+            "/api/incomes",
+            {
+                "description": "Receita pendente teste",
+                "category": "Servico",
+                "amount": 200,
+                "receipt_date": "2026-06-22",
+                "status": "Pendente",
+                "notes": "Deve entrar no dashboard apenas ao receber",
+            },
+            normal_login["token"],
+        )
+        dashboard_before_receive_pending = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])
+        request("POST", f"/api/incomes/{pending_income['id']}/receive", {}, normal_login["token"])
+        dashboard_after_receive_pending = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])
+        pending_income_filter_after_receive = request("GET", "/api/incomes?month=6&year=2026&status=Pendente", token=normal_login["token"])
         recurring_income = request(
             "POST",
             "/api/incomes",
@@ -252,6 +269,7 @@ def main():
             normal_login["token"],
         )
         request("POST", f"/api/incomes/{recurring_income['ids'][1]}/receive", {}, normal_login["token"])
+        recurring_pending_after_receive = request("GET", "/api/incomes?year=2026&status=Pendente", token=normal_login["token"])
         cancel_recurring = request("POST", f"/api/incomes/{recurring_income['ids'][1]}/cancel-future", {}, normal_login["token"])
         goal = request(
             "POST",
@@ -304,6 +322,7 @@ def main():
             blocked_cross_delete = exc.code == 404
         admin_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=admin_login["token"])
         request("POST", f"/api/expenses/{expense['id']}/pay", {"payment_date": "2026-06-09"}, normal_login["token"])
+        paid_expense_pending_filter = request("GET", "/api/expenses?month=6&year=2026&status=Pendente", token=normal_login["token"])
         template_bytes = request("GET", "/api/import/template", token=normal_login["token"])
         template_sheets = server.read_xlsx_workbook(template_bytes)
         expected_template_headers = {name: config["model_headers"] for name, config in server.IMPORT_SHEETS.items()}
@@ -413,9 +432,19 @@ def main():
         assert_true(normal_maintenance_blocked, "usuario comum acessou manutencao")
         assert_true("settings" in maintenance_status and maintenance_settings["settings"]["cleanup_logs_days"] == 90, "configuracao de manutencao falhou")
         assert_true(len(maintenance_run["result"]["report"]) >= 4, "limpeza manual nao gerou relatorio")
+        assert_true(
+            dashboard_before_receive_pending["cards"]["total_income"] + 200 == dashboard_after_receive_pending["cards"]["total_income"],
+            "receita pendente entrou no total antes de ser recebida ou nao atualizou ao receber",
+        )
+        assert_true(
+            dashboard_before_receive_pending["cards"]["future_incomes"] - 200 == dashboard_after_receive_pending["cards"]["future_incomes"],
+            "receita recebida continuou como receita futura",
+        )
+        assert_true(not any(item["id"] == pending_income["id"] for item in pending_income_filter_after_receive["incomes"]), "receita recebida continuou no filtro de pendentes")
         assert_true(future_after_installment == 2950.0, "parcelas futuras incluiu valor incorreto apos criar parcelamento")
         assert_true(future_after_paid == 2700.0, "parcela paga nao saiu de parcelas futuras")
         assert_true(cancel_installments["cancelled"] == 8 and future_after_cancel_installments == 300.0, "parcelas canceladas nao sairam de parcelas futuras")
+        assert_true(not any(item["id"] == expense["id"] for item in paid_expense_pending_filter["expenses"]), "despesa paga continuou no filtro de pendentes")
         assert_true(set(template_sheets.keys()) >= {"DESPESAS", "RECEITAS", "METAS", "PARCELADAS"}, "modelo XLSX nao possui as abas oficiais")
         assert_true(official_template_preview["errors"] == [] and len(official_template_preview["valid"]) == 4, "modelo oficial XLSX nao passou na previa")
         assert_true(preview["errors"] == [] and len(preview["valid"]) == 4, "preview de importacao XLSX falhou")
@@ -451,6 +480,7 @@ def main():
         assert_true(nubank_three_rows[0]["installment_group"] != nubank_two_rows[0]["installment_group"], "parcelamentos iguais foram agrupados indevidamente")
         assert_true(any(item["id"] == income["id"] for item in normal_incomes["incomes"]), "receita cadastrada nao apareceu para o usuario")
         assert_true(recurring_income["recurrences"] == 12 and cancel_recurring["cancelled"] == 10, "receita recorrente 12 meses ou cancelamento futuro falhou")
+        assert_true(not any(item["id"] == recurring_income["ids"][1] for item in recurring_pending_after_receive["incomes"]), "receita recorrente recebida continuou no filtro de pendentes")
         assert_true(any(item["description"] == "Servico mensal (2/12)" and float(item["amount"]) == 400 and item["status"] == "Recebido" for item in year_incomes["incomes"]), "edicao individual ou recebimento de receita recorrente falhou")
         assert_true(not any(item["description"] == "Servico mensal (3/12)" for item in year_incomes["incomes"]), "receitas futuras canceladas continuaram na listagem")
         assert_true(any(item["description"] == "Receita importada (3/3)" for item in year_incomes["incomes"]), "importacao de receita recorrente nao gerou receitas futuras")
