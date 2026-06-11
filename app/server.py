@@ -422,32 +422,40 @@ def ensure_active_superadmin(conn):
     active = conn.execute(
         "SELECT * FROM users WHERE profile = 'superadmin' AND active = 1 AND deleted = 0 ORDER BY id LIMIT 1"
     ).fetchone()
-    if active:
-        print("SuperAdmin ativo encontrado")
-        return active
-
-    salt, password_hash = hash_password("admin123")
     admin = conn.execute("SELECT * FROM users WHERE username = ?", ("admin",)).fetchone()
     if admin:
         conn.execute(
             """
             UPDATE users
-            SET full_name = ?, password_hash = ?, salt = ?, profile = 'superadmin',
-                active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL
+            SET profile = 'superadmin', active = 1, deleted = 0, deleted_at = NULL, deleted_by = NULL
             WHERE id = ?
             """,
-            ("Administrador", password_hash, salt, admin["id"]),
+            (admin["id"],),
         )
-        created = conn.execute("SELECT * FROM users WHERE id = ?", (admin["id"],)).fetchone()
-    else:
-        cur = conn.execute(
+        print("SuperAdmin ativo encontrado" if active else "Nenhum SuperAdmin ativo encontrado. Criado admin padrão.")
+        return conn.execute("SELECT * FROM users WHERE id = ?", (admin["id"],)).fetchone()
+
+    if active:
+        salt, password_hash = hash_password("admin123")
+        conn.execute(
             """
             INSERT INTO users (username, full_name, password_hash, salt, profile, active, deleted, created_at)
             VALUES (?, ?, ?, ?, 'superadmin', 1, 0, ?)
             """,
             ("admin", "Administrador", password_hash, salt, now()),
         )
-        created = conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
+        print("SuperAdmin ativo encontrado")
+        return active
+
+    salt, password_hash = hash_password("admin123")
+    cur = conn.execute(
+        """
+        INSERT INTO users (username, full_name, password_hash, salt, profile, active, deleted, created_at)
+        VALUES (?, ?, ?, ?, 'superadmin', 1, 0, ?)
+        """,
+        ("admin", "Administrador", password_hash, salt, now()),
+    )
+    created = conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
     print("Nenhum SuperAdmin ativo encontrado. Criado admin padrão.")
     return created
 
@@ -1095,11 +1103,13 @@ def public_user(row):
     data = row_to_dict(row)
     if not data:
         return None
+    profile = data.get("profile", "usuario")
     return {
         "id": data["id"],
         "username": data["username"],
         "full_name": data.get("full_name", ""),
-        "profile": data.get("profile", "usuario"),
+        "profile": profile,
+        "role": profile,
         "active": bool(data.get("active", 1)),
         "deleted": bool(data.get("deleted", 0)),
         "deleted_at": data.get("deleted_at"),

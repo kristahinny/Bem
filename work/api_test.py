@@ -464,6 +464,7 @@ def main():
         principal_login = request("POST", "/api/login", {"username": system_reset["user"]["username"], "password": "admin123"})
 
         assert_true(super_login["user"]["profile"] == "superadmin", "login superadmin falhou")
+        assert_true(super_login["user"]["role"] == "superadmin" and super_login["user"]["active"] is True and super_login["user"]["deleted"] is False, "role/status do superadmin invalido")
         assert_true(super_delete_blocked, "SuperAdmin principal pode ser excluido")
         assert_true(super_toggle_blocked, "SuperAdmin principal pode ser desativado")
         assert_true(normal_login["user"]["profile"] == "usuario", "cadastro publico nao criou usuario comum")

@@ -32,6 +32,10 @@ function authHeaders() {
   return state.token ? { Authorization: `Bearer ${state.token}` } : {};
 }
 
+function isSuperAdmin(user = state.user) {
+  return (user?.role || user?.profile) === "superadmin";
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -75,7 +79,7 @@ function query(extra = {}) {
     year: $("#filterYear")?.value || "",
     ...extra,
   });
-  if (state.user?.profile === "superadmin" && $("#filterUser")?.value) {
+  if (isSuperAdmin() && $("#filterUser")?.value) {
     params.set("user_id", $("#filterUser").value);
   }
   Object.entries(extra).forEach(([k, v]) => { if (!v) params.delete(k); });
@@ -85,9 +89,9 @@ function query(extra = {}) {
 function showApp() {
   $("#loginScreen").classList.add("hidden");
   $("#appShell").classList.remove("hidden");
-  const isSuperAdmin = state.user?.profile === "superadmin";
-  $$(".admin-only").forEach((el) => el.classList.toggle("hidden", !isSuperAdmin));
-  $$(".superadmin-only").forEach((el) => el.classList.toggle("hidden", !isSuperAdmin));
+  const canAdmin = isSuperAdmin();
+  $$(".admin-only").forEach((el) => el.classList.toggle("hidden", !canAdmin));
+  $$(".superadmin-only").forEach((el) => el.classList.toggle("hidden", !canAdmin));
 }
 
 function showLogin() {
@@ -121,8 +125,7 @@ function setView(view) {
 }
 
 function visibleSettingsTabs() {
-  const isSuperAdmin = state.user?.profile === "superadmin";
-  return isSuperAdmin ? ["users", "categories", "import", "profile", "security", "maintenance"] : ["import", "profile"];
+  return isSuperAdmin() ? ["users", "categories", "import", "profile", "security", "maintenance"] : ["import", "profile"];
 }
 
 function setSettingsTab(tab) {
@@ -155,7 +158,7 @@ async function loadCategories() {
 }
 
 async function loadUserOptions() {
-  if (state.user?.profile !== "superadmin") return;
+  if (!isSuperAdmin()) return;
   const data = await api("/api/users");
   state.users = data.users;
   const options = data.users.map((user) => `<option value="${user.id}">${escapeHtml(user.full_name || user.username)} (${escapeHtml(user.username)})</option>`).join("");
@@ -338,7 +341,7 @@ function renderUsers() {
 }
 
 async function loadDeletedUsers() {
-  if (state.user?.profile !== "superadmin") return;
+  if (!isSuperAdmin()) return;
   const target = $("#deletedUsersTable");
   if (!target) return;
   const data = await api("/api/users/deleted");
@@ -358,7 +361,7 @@ async function loadDeletedUsers() {
 }
 
 async function loadManagedCategories() {
-  if (state.user?.profile !== "superadmin") return;
+  if (!isSuperAdmin()) return;
   const data = await api("/api/categories/manage");
   state.categoriesManaged = data.categories;
   $("#categoriesTable").innerHTML = data.categories.map((item) => `
@@ -397,7 +400,7 @@ function renderMaintenanceLogs(logs) {
 }
 
 async function loadMaintenance() {
-  if (state.user?.profile !== "superadmin") return;
+  if (!isSuperAdmin()) return;
   const data = await api("/api/maintenance");
   fillMaintenanceSettings(data.settings);
   const last = data.last_cleanup;
@@ -420,10 +423,10 @@ async function refreshAll() {
     if (state.view === "goals") await loadGoals();
     if (state.view === "reports") await loadReport();
     if (state.view === "settings") {
-      if (state.user?.profile === "superadmin" && state.settingsTab === "users") await loadUsers();
-      if (state.user?.profile === "superadmin" && state.settingsTab === "categories") await loadManagedCategories();
-      if (state.user?.profile === "superadmin" && state.settingsTab === "security") await loadDeletedUsers();
-      if (state.user?.profile === "superadmin" && state.settingsTab === "maintenance") await loadMaintenance();
+      if (isSuperAdmin() && state.settingsTab === "users") await loadUsers();
+      if (isSuperAdmin() && state.settingsTab === "categories") await loadManagedCategories();
+      if (isSuperAdmin() && state.settingsTab === "security") await loadDeletedUsers();
+      if (isSuperAdmin() && state.settingsTab === "maintenance") await loadMaintenance();
     }
   } catch (error) {
     toast(error.message);
@@ -470,7 +473,7 @@ function setPeriodFromDate(value) {
 }
 
 function clearUserFilterForOwnSave() {
-  if (state.user?.profile === "superadmin" && $("#filterUser")) {
+  if (isSuperAdmin() && $("#filterUser")) {
     $("#filterUser").value = "";
   }
 }
@@ -739,7 +742,7 @@ async function commitImport() {
       return;
     }
     const payload = { rows: state.importRows };
-    if (state.user?.profile === "superadmin" && $("#filterUser")?.value) payload.user_id = $("#filterUser").value;
+    if (isSuperAdmin() && $("#filterUser")?.value) payload.user_id = $("#filterUser").value;
     const data = await api("/api/import/commit", { method: "POST", body: JSON.stringify(payload) });
     console.log("[importacao] commit retornado:", data);
     toast(`${data.imported} registros importados. ${data.skipped || 0} duplicados ignorados.`);
