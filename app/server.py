@@ -1471,7 +1471,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 return self.send_error_json("O SuperAdmin principal nao pode ser excluido")
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
-        self.send_json({"ok": True, "deactivated": True})
+        self.send_json({"success": True, "message": "Registro excluído com sucesso", "id": user_id, "deactivated": True})
 
     def handle_change_password(self, data):
         user = self.require_user()
@@ -1549,7 +1549,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             cur = conn.execute("UPDATE categories SET active = 0 WHERE id = ?", (category_id,))
         if cur.rowcount == 0:
             return self.send_error_json("Categoria nao encontrada", HTTPStatus.NOT_FOUND)
-        self.send_json({"ok": True, "deactivated": True})
+        self.send_json({"success": True, "message": "Registro excluído com sucesso", "id": category_id, "deactivated": True})
 
     def handle_maintenance_status(self):
         if self.require_superadmin() is None:
@@ -1617,14 +1617,14 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 (today, *scope_values),
             ).fetchall()
             goals = conn.execute(
-                f"SELECT * FROM goals WHERE 1 = 1{scope_sql}",
+                f"SELECT * FROM goals WHERE active = 1{scope_sql}",
                 tuple(scope_values),
             ).fetchall()
             future_installments = conn.execute(
                 f"""
                 SELECT COALESCE(SUM(amount), 0) AS total
                 FROM expenses
-                WHERE status != 'Pago' AND cancelled = 0 AND installment_group IS NOT NULL AND due_date > ?{scope_sql}
+                WHERE active = 1 AND status != 'Pago' AND cancelled = 0 AND installment_group IS NOT NULL AND due_date > ?{scope_sql}
                 """,
                 (today, *scope_values),
             ).fetchone()
@@ -1904,7 +1904,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         user = self.require_user()
         if user is None:
             return
-        where, values = apply_user_scope("", [], user, params)
+        where, values = apply_user_scope(" WHERE active = 1", [], user, params)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM goals{where} ORDER BY target_date, id DESC", values).fetchall()
         self.send_json({"goals": [enrich_goal(row) for row in rows]})
@@ -1974,7 +1974,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         scope_sql, scope_values = owned_update_suffix(user)
         sign = 1 if operation == "add" else -1
         with connect() as conn:
-            row = conn.execute(f"SELECT current_amount FROM goals WHERE id = ?{scope_sql}", (goal_id, *scope_values)).fetchone()
+            row = conn.execute(f"SELECT current_amount FROM goals WHERE active = 1 AND id = ?{scope_sql}", (goal_id, *scope_values)).fetchone()
             if not row:
                 return self.send_error_json("Meta nao encontrada", HTTPStatus.NOT_FOUND)
             new_amount = max(float(row["current_amount"]) + (amount * sign), 0)
@@ -1990,7 +1990,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             cur = conn.execute(f"UPDATE {table} SET active = 0, updated_at = ? WHERE id = ?{scope_sql}", (now(), row_id, *scope_values))
         if cur.rowcount == 0:
             return self.send_error_json("Registro nao encontrado", HTTPStatus.NOT_FOUND)
-        self.send_json({"ok": True})
+        self.send_json({"success": True, "message": "Registro excluído com sucesso", "id": row_id, "table": table})
 
     def handle_report(self, params):
         user = self.require_user()
@@ -2039,7 +2039,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 f"""
                 SELECT substr(due_date, 1, 7) AS month, COALESCE(SUM(amount), 0) AS total
                 FROM expenses
-                WHERE cancelled = 0 AND due_date >= ?{scope_sql}
+                WHERE active = 1 AND cancelled = 0 AND due_date >= ?{scope_sql}
                 GROUP BY substr(due_date, 1, 7)
                 """,
                 (months[0] + "-01", *scope_values),
@@ -2048,13 +2048,13 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 f"""
                 SELECT substr(receipt_date, 1, 7) AS month, COALESCE(SUM(amount), 0) AS total
                 FROM incomes
-                WHERE cancelled = 0 AND receipt_date >= ?{scope_sql}
+                WHERE active = 1 AND cancelled = 0 AND receipt_date >= ?{scope_sql}
                 GROUP BY substr(receipt_date, 1, 7)
                 """,
                 (months[0] + "-01", *scope_values),
             ).fetchall()
             goals = conn.execute(
-                f"SELECT COALESCE(SUM(current_amount), 0) AS total FROM goals WHERE 1 = 1{scope_sql}",
+                f"SELECT COALESCE(SUM(current_amount), 0) AS total FROM goals WHERE active = 1{scope_sql}",
                 tuple(scope_values),
             ).fetchone()
         expense_map = {row["month"]: row["total"] for row in expenses}
@@ -2081,15 +2081,15 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 year, month_num = map(int, month.split("-"))
                 start, end = month_range(year, month_num)
                 income = conn.execute(
-                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM incomes WHERE cancelled = 0 AND receipt_date >= ? AND receipt_date < ?{scope_sql}",
+                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM incomes WHERE active = 1 AND cancelled = 0 AND receipt_date >= ? AND receipt_date < ?{scope_sql}",
                     (start, end, *scope_values),
                 ).fetchone()["total"]
                 expense = conn.execute(
-                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE cancelled = 0 AND due_date >= ? AND due_date < ?{scope_sql}",
+                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE active = 1 AND cancelled = 0 AND due_date >= ? AND due_date < ?{scope_sql}",
                     (start, end, *scope_values),
                 ).fetchone()["total"]
                 goals = conn.execute(
-                    f"SELECT COALESCE(SUM(current_amount), 0) AS total FROM goals WHERE substr(updated_at, 1, 7) = ?{scope_sql}",
+                    f"SELECT COALESCE(SUM(current_amount), 0) AS total FROM goals WHERE active = 1 AND substr(updated_at, 1, 7) = ?{scope_sql}",
                     (month, *scope_values),
                 ).fetchone()["total"]
                 rows.append(

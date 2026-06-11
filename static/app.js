@@ -395,6 +395,14 @@ async function refreshAll() {
   }
 }
 
+async function refreshAfterMutation(loaders = []) {
+  for (const loader of loaders) {
+    await loader();
+  }
+  await loadDashboard().catch(() => {});
+  if (state.view === "reports") await loadReport().catch(() => {});
+}
+
 function formData(form) {
   return Object.fromEntries(new FormData(form).entries());
 }
@@ -756,21 +764,20 @@ window.deleteExpense = async (id) => {
   if (!confirm("Excluir esta conta?")) return;
   await api(`/api/expenses/${id}`, { method: "DELETE" });
   toast("Conta excluida.");
-  await loadExpenses();
+  await refreshAfterMutation([loadExpenses]);
 };
 
 window.deleteIncome = async (id) => {
   if (!confirm("Excluir esta receita?")) return;
   await api(`/api/incomes/${id}`, { method: "DELETE" });
   toast("Receita excluida.");
-  await loadIncomes();
+  await refreshAfterMutation([loadIncomes]);
 };
 
 window.receiveIncome = async (id) => {
   await api(`/api/incomes/${id}/receive`, { method: "POST", body: "{}" });
   toast("Receita marcada como recebida.");
-  await loadIncomes();
-  await loadDashboard().catch(() => {});
+  await refreshAfterMutation([loadIncomes]);
 };
 
 window.payExpense = async (id) => {
@@ -778,21 +785,21 @@ window.payExpense = async (id) => {
   if (!paymentDate) return;
   await api(`/api/expenses/${id}/pay`, { method: "POST", body: JSON.stringify({ payment_date: paymentDate }) });
   toast("Conta marcada como paga.");
-  await loadExpenses();
+  await refreshAfterMutation([loadExpenses]);
 };
 
 window.cancelFutureInstallments = async (id) => {
   if (!confirm("Cancelar parcelas futuras nao pagas?")) return;
   const data = await api(`/api/expenses/${id}/cancel-future`, { method: "POST", body: "{}" });
   toast(`${data.cancelled} parcelas futuras canceladas.`);
-  await loadExpenses();
+  await refreshAfterMutation([loadExpenses]);
 };
 
 window.cancelFutureIncomes = async (id) => {
   if (!confirm("Cancelar receitas futuras pendentes?")) return;
   const data = await api(`/api/incomes/${id}/cancel-future`, { method: "POST", body: "{}" });
   toast(`${data.cancelled} receitas futuras canceladas.`);
-  await loadIncomes();
+  await refreshAfterMutation([loadIncomes]);
 };
 
 window.changeGoalAmount = async (id, action) => {
@@ -801,22 +808,21 @@ window.changeGoalAmount = async (id, action) => {
   if (!amount) return;
   await api(`/api/goals/${id}/${action}`, { method: "POST", body: JSON.stringify({ amount }) });
   toast("Meta atualizada.");
-  await loadGoals();
+  await refreshAfterMutation([loadGoals]);
 };
 
 window.deleteGoal = async (id) => {
   if (!confirm("Excluir esta meta?")) return;
   await api(`/api/goals/${id}`, { method: "DELETE" });
   toast("Meta excluida.");
-  await loadGoals();
+  await refreshAfterMutation([loadGoals]);
 };
 
 window.deleteCategory = async (id) => {
   if (!confirm("Excluir esta categoria?")) return;
   await api(`/api/categories/${id}`, { method: "DELETE" });
   toast("Categoria excluida.");
-  await loadCategories();
-  await loadManagedCategories();
+  await refreshAfterMutation([loadCategories, loadManagedCategories]);
 };
 
 window.changeUserPassword = async (id) => {
@@ -837,8 +843,7 @@ window.deleteUser = async (id) => {
   if (!confirm("Excluir este usuario?")) return;
   await api(`/api/users/${id}`, { method: "DELETE" });
   toast("Usuario excluido.");
-  await loadUsers();
-  await loadUserOptions();
+  await refreshAfterMutation([loadUsers, loadUserOptions]);
 };
 
 function logout(callApi = true) {

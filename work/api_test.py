@@ -128,6 +128,19 @@ def main():
             },
             normal_login["token"],
         )
+        income_to_delete = request(
+            "POST",
+            "/api/incomes",
+            {
+                "description": "Receita para excluir",
+                "category": "Outros",
+                "amount": 123,
+                "receipt_date": "2026-06-11",
+                "status": "Recebido",
+                "notes": "Teste de exclusao",
+            },
+            normal_login["token"],
+        )
         recurring_income = request(
             "POST",
             "/api/incomes",
@@ -204,6 +217,19 @@ def main():
             },
             normal_login["token"],
         )
+        deleted_goal = request(
+            "POST",
+            "/api/goals",
+            {
+                "name": "Meta para excluir",
+                "description": "Nao deve aparecer no dashboard",
+                "target_amount": 5000,
+                "current_amount": 777,
+                "target_date": "2026-12-31",
+                "status": "Ativa",
+            },
+            normal_login["token"],
+        )
         request("POST", f"/api/goals/{goal['id']}/add", {"amount": 500}, normal_login["token"])
         goals = request("GET", "/api/goals", token=normal_login["token"])
         category = request("POST", "/api/categories", {"name": "Categoria Teste"}, super_token)
@@ -222,6 +248,11 @@ def main():
         )
         maintenance_run = request("POST", "/api/maintenance/run", {}, super_token)
         admin_login = request("POST", "/api/login", {"username": "admin_criado", "password": "admin123"})
+        blocked_cross_delete = False
+        try:
+            request("DELETE", f"/api/incomes/{income['id']}", token=admin_login["token"])
+        except urllib.error.HTTPError as exc:
+            blocked_cross_delete = exc.code == 404
         admin_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=admin_login["token"])
         request("POST", f"/api/expenses/{expense['id']}/pay", {"payment_date": "2026-06-09"}, normal_login["token"])
         template_bytes = request("GET", "/api/import/template", token=normal_login["token"])
@@ -267,7 +298,12 @@ def main():
         )
         committed = request("POST", "/api/import/commit", {"rows": preview["valid"]}, normal_login["token"])
         duplicate_commit = request("POST", "/api/import/commit", {"rows": preview["valid"]}, normal_login["token"])
+        dashboard_before_goal_delete = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])
         request("DELETE", f"/api/expenses/{expense['id']}", token=normal_login["token"])
+        request("DELETE", f"/api/expenses/{installment['ids'][0]}", token=normal_login["token"])
+        request("DELETE", f"/api/incomes/{income_to_delete['id']}", token=normal_login["token"])
+        delete_goal_response = request("DELETE", f"/api/goals/{deleted_goal['id']}", token=normal_login["token"])
+        dashboard_after_goal_delete = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])
         after_soft_delete_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
         normal_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
         normal_incomes = request("GET", "/api/incomes?month=6&year=2026", token=normal_login["token"])
@@ -307,6 +343,7 @@ def main():
         assert_true(duplicate_blocked, "usuario duplicado nao foi bloqueado")
         assert_true(blocked, "usuario comum acessou menu/rota de usuarios")
         assert_true(category_blocked, "usuario comum acessou rota administrativa de categorias")
+        assert_true(blocked_cross_delete, "usuario conseguiu excluir dados de outro usuario")
         assert_true(any(item["id"] == safe_category["id"] and item["active"] == 0 for item in categories_after_delete["categories"]), "categoria foi apagada em vez de desativada")
         assert_true(any(item["name"] == "Categoria Teste Seguro" for item in categories_before["categories"]), "categoria nao foi criada/listada")
         assert_true(normal_maintenance_blocked, "usuario comum acessou manutencao")
@@ -318,6 +355,10 @@ def main():
         assert_true(committed["imported"] == 7, "importacao XLSX nao inseriu despesas, receitas recorrentes, metas e parcelas")
         assert_true(duplicate_commit["imported"] == 0 and duplicate_commit["skipped"] == 4, "importacao duplicada nao foi ignorada")
         assert_true(not any(item["id"] == expense["id"] for item in after_soft_delete_expenses["expenses"]), "despesa desativada continuou na listagem")
+        assert_true(delete_goal_response["success"] is True, "DELETE nao retornou sucesso claro")
+        assert_true(not any(item["id"] == income_to_delete["id"] for item in normal_incomes["incomes"]), "receita excluida continuou na listagem")
+        assert_true(not any(item["id"] == deleted_goal["id"] for item in normal_goals["goals"]), "meta excluida continuou na listagem")
+        assert_true(dashboard_after_goal_delete["cards"]["goals_total"] == dashboard_before_goal_delete["cards"]["goals_total"] - 777, "dashboard nao recalculou metas apos exclusao")
         assert_true(any(item["id"] == created_admin["id"] and item["active"] is False for item in users_after_delete["users"]), "usuario foi apagado em vez de desativado")
         assert_true(any(item["description"] == "Despesa importada" for item in normal_expenses["expenses"]), "despesa importada nao apareceu para o usuario")
         assert_true(any(item["description"] == "Compra parcelada importada (1/2)" for item in normal_expenses["expenses"]), "parcela importada nao apareceu para o usuario")
