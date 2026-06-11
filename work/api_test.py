@@ -1,4 +1,4 @@
-import json
+﻿import json
 import base64
 import os
 import shutil
@@ -128,6 +128,23 @@ def main():
             },
             normal_login["token"],
         )
+        recurring_income = request(
+            "POST",
+            "/api/incomes",
+            {
+                "description": "Servico mensal",
+                "category": "Outros",
+                "amount": 500,
+                "receipt_date": "2026-07-05",
+                "status": "Pendente",
+                "notes": "Recorrente automatico",
+                "is_recurring": "Sim",
+                "recurring_total": 12,
+                "first_receipt_date": "2026-07-05",
+                "recurring_amount": 500,
+            },
+            normal_login["token"],
+        )
         installment = request(
             "POST",
             "/api/expenses",
@@ -143,6 +160,37 @@ def main():
             },
             normal_login["token"],
         )
+        request(
+            "PUT",
+            f"/api/expenses/{installment['ids'][1]}",
+            {
+                "description": "Notebook (2/10)",
+                "category": "Cartao de Credito",
+                "amount": 250,
+                "due_date": "2026-07-20",
+                "status": "Pendente",
+                "payment_method": "Cartao",
+                "notes": "Parcela ajustada",
+                "update_scope": "single",
+            },
+            normal_login["token"],
+        )
+        request(
+            "PUT",
+            f"/api/incomes/{recurring_income['ids'][1]}",
+            {
+                "description": "Servico mensal (2/12)",
+                "category": "Outros",
+                "amount": 400,
+                "receipt_date": "2026-08-05",
+                "status": "Pendente",
+                "notes": "Recebimento parcial previsto",
+                "update_scope": "single",
+            },
+            normal_login["token"],
+        )
+        request("POST", f"/api/incomes/{recurring_income['ids'][1]}/receive", {}, normal_login["token"])
+        cancel_recurring = request("POST", f"/api/incomes/{recurring_income['ids'][1]}/cancel-future", {}, normal_login["token"])
         goal = request(
             "POST",
             "/api/goals",
@@ -160,17 +208,26 @@ def main():
         goals = request("GET", "/api/goals", token=normal_login["token"])
         category = request("POST", "/api/categories", {"name": "Categoria Teste"}, super_token)
         managed_categories = request("GET", "/api/categories/manage", token=super_token)
+        normal_maintenance_blocked = False
+        try:
+            request("GET", "/api/maintenance", token=normal_login["token"])
+        except urllib.error.HTTPError as exc:
+            normal_maintenance_blocked = exc.code == 403
+        maintenance_status = request("GET", "/api/maintenance", token=super_token)
+        maintenance_settings = request(
+            "PUT",
+            "/api/maintenance/settings",
+            {"cleanup_logs_days": 90, "import_history_days": 180, "temp_files_days": 30, "test_records_days": 30},
+            super_token,
+        )
+        maintenance_run = request("POST", "/api/maintenance/run", {}, super_token)
         admin_login = request("POST", "/api/login", {"username": "admin_criado", "password": "admin123"})
         admin_dashboard = request("GET", "/api/dashboard?month=6&year=2026", token=admin_login["token"])
         request("POST", f"/api/expenses/{expense['id']}/pay", {"payment_date": "2026-06-09"}, normal_login["token"])
         template_bytes = request("GET", "/api/import/template", token=normal_login["token"])
         template_sheets = server.read_xlsx_workbook(template_bytes)
-        expected_template_headers = {
-            "DESPESAS": ["Data", "Descrição", "Categoria", "Valor", "Vencimento", "Status", "Observação"],
-            "RECEITAS": ["Data", "Descrição", "Categoria", "Valor", "Observação"],
-            "METAS": ["Nome", "Descrição", "Valor Objetivo", "Valor Atual", "Data Prevista"],
-            "PARCELADAS": ["Descrição", "Categoria", "Valor Total", "Parcelas", "Data Primeira Parcela"],
-        }
+        expected_template_headers = {name: config["model_headers"] for name, config in server.IMPORT_SHEETS.items()}
+
         for sheet_name, expected_headers in expected_template_headers.items():
             assert_true(template_sheets.get(sheet_name, [[]])[0] == expected_headers, f"cabecalho oficial invalido na aba {sheet_name}")
         official_template_payload = {"filename": "modelo-importacao-financeira.xlsx", "content_base64": base64.b64encode(template_bytes).decode("ascii")}
@@ -188,16 +245,16 @@ def main():
                     ["", "", "", "", "", "", ""],
                 ],
                 "RECEITAS": [
-                    ["Data", "DESCRIÇÃO", "Categoria", "Valor", "Observação"],
-                    ["2026-06-21", "Receita importada", "Outros", "200", ""],
+                    server.IMPORT_SHEETS["RECEITAS"]["model_headers"],
+                    ["2026-06-21", "Receita importada", "Outros", "200", "", "Sim", "3", "2026-06-21"],
                 ],
                 "METAS": [
                     ["Nome", "Descricao", "Valor Objetivo", "Valor Atual", "Data Prevista"],
                     ["Meta importada", "Teste de meta", "1000", "100", "2026-12-31"],
                 ],
                 "PARCELADAS": [
-                    ["Descricao", "Categoria", "Valor Total", "Parcelas", "Data Primeira Parcela"],
-                    ["Compra parcelada importada", "Cartao de Credito", "600", "2", "2026-06-25"],
+                    server.IMPORT_SHEETS["PARCELADAS"]["model_headers"],
+                    ["Compra parcelada importada", "Cartao de Credito", "600", "250", "2", "2026-06-25"],
                 ],
             }
         )
@@ -214,6 +271,8 @@ def main():
         after_soft_delete_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
         normal_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
         normal_incomes = request("GET", "/api/incomes?month=6&year=2026", token=normal_login["token"])
+        july_expenses = request("GET", "/api/expenses?month=7&year=2026", token=normal_login["token"])
+        year_incomes = request("GET", "/api/incomes?year=2026", token=normal_login["token"])
         normal_goals = request("GET", "/api/goals", token=normal_login["token"])
         admin_expenses = request("GET", "/api/expenses?month=6&year=2026", token=admin_login["token"])
         admin_incomes = request("GET", "/api/incomes?month=6&year=2026", token=admin_login["token"])
@@ -250,16 +309,24 @@ def main():
         assert_true(category_blocked, "usuario comum acessou rota administrativa de categorias")
         assert_true(any(item["id"] == safe_category["id"] and item["active"] == 0 for item in categories_after_delete["categories"]), "categoria foi apagada em vez de desativada")
         assert_true(any(item["name"] == "Categoria Teste Seguro" for item in categories_before["categories"]), "categoria nao foi criada/listada")
+        assert_true(normal_maintenance_blocked, "usuario comum acessou manutencao")
+        assert_true("settings" in maintenance_status and maintenance_settings["settings"]["cleanup_logs_days"] == 90, "configuracao de manutencao falhou")
+        assert_true(len(maintenance_run["result"]["report"]) >= 4, "limpeza manual nao gerou relatorio")
         assert_true(set(template_sheets.keys()) >= {"DESPESAS", "RECEITAS", "METAS", "PARCELADAS"}, "modelo XLSX nao possui as abas oficiais")
         assert_true(official_template_preview["errors"] == [] and len(official_template_preview["valid"]) == 4, "modelo oficial XLSX nao passou na previa")
         assert_true(preview["errors"] == [] and len(preview["valid"]) == 4, "preview de importacao XLSX falhou")
-        assert_true(committed["imported"] == 5, "importacao XLSX nao inseriu despesas, receitas, metas e parcelas")
+        assert_true(committed["imported"] == 7, "importacao XLSX nao inseriu despesas, receitas recorrentes, metas e parcelas")
         assert_true(duplicate_commit["imported"] == 0 and duplicate_commit["skipped"] == 4, "importacao duplicada nao foi ignorada")
         assert_true(not any(item["id"] == expense["id"] for item in after_soft_delete_expenses["expenses"]), "despesa desativada continuou na listagem")
         assert_true(any(item["id"] == created_admin["id"] and item["active"] is False for item in users_after_delete["users"]), "usuario foi apagado em vez de desativado")
         assert_true(any(item["description"] == "Despesa importada" for item in normal_expenses["expenses"]), "despesa importada nao apareceu para o usuario")
         assert_true(any(item["description"] == "Compra parcelada importada (1/2)" for item in normal_expenses["expenses"]), "parcela importada nao apareceu para o usuario")
+        assert_true(any(item["description"] == "Notebook (2/10)" and float(item["amount"]) == 250 for item in july_expenses["expenses"]), "edicao individual de parcela de despesa falhou")
         assert_true(any(item["id"] == income["id"] for item in normal_incomes["incomes"]), "receita cadastrada nao apareceu para o usuario")
+        assert_true(recurring_income["recurrences"] == 12 and cancel_recurring["cancelled"] == 10, "receita recorrente 12 meses ou cancelamento futuro falhou")
+        assert_true(any(item["description"] == "Servico mensal (2/12)" and float(item["amount"]) == 400 and item["status"] == "Recebido" for item in year_incomes["incomes"]), "edicao individual ou recebimento de receita recorrente falhou")
+        assert_true(not any(item["description"] == "Servico mensal (3/12)" for item in year_incomes["incomes"]), "receitas futuras canceladas continuaram na listagem")
+        assert_true(any(item["description"] == "Receita importada (3/3)" for item in year_incomes["incomes"]), "importacao de receita recorrente nao gerou receitas futuras")
         assert_true(any(item["name"] == "Meta importada" for item in normal_goals["goals"]), "meta importada nao apareceu para o usuario")
         assert_true(not admin_expenses["expenses"], "admin sem lancamentos viu contas de outro usuario")
         assert_true(not admin_incomes["incomes"], "admin sem lancamentos viu receitas de outro usuario")
@@ -278,6 +345,7 @@ def main():
                     "created_admin_id": created_admin["id"],
                     "category_soft_deleted": True,
                     "user_soft_deleted": True,
+                    "maintenance_items": len(maintenance_run["result"]["report"]),
                     "imported": committed["imported"],
                     "duplicate_import_skipped": duplicate_commit["skipped"],
                     "xlsx_template_bytes": len(template_bytes),
@@ -309,3 +377,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

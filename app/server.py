@@ -1,4 +1,4 @@
-import csv
+﻿import csv
 import base64
 import hashlib
 import hmac
@@ -20,6 +20,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "financeiro.db"
+TEMP_DIR = DATA_DIR / "tmp"
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = bool(DATABASE_URL)
 SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "12"))
@@ -50,11 +51,11 @@ IMPORT_SHEETS = {
         "sample": ["2026-06-10", "Mercado do mes", "Alimentação", "250.00", "2026-06-15", "Pendente", ""],
     },
     "RECEITAS": {
-        "headers": ["data_recebimento", "descricao", "categoria", "valor", "status", "observacao"],
+        "headers": ["data_recebimento", "descricao", "categoria", "valor", "status", "observacao", "recorrente", "quantidade_parcelas", "data_primeiro_recebimento"],
         "required_headers": ["data_recebimento", "descricao", "categoria", "valor", "observacao"],
-        "aliases": {"data": "data_recebimento"},
-        "model_headers": ["Data", "Descrição", "Categoria", "Valor", "Observação"],
-        "sample": ["2026-06-05", "Salario", "Outros", "3500.00", ""],
+        "aliases": {"data": "data_recebimento", "quantidade": "quantidade_parcelas", "parcelas": "quantidade_parcelas"},
+        "model_headers": ["Data", "Descrição", "Categoria", "Valor", "Observação", "Recorrente", "Quantidade Parcelas", "Data Primeiro Recebimento"],
+        "sample": ["2026-06-05", "Salario", "Outros", "3500.00", "", "Nao", "", ""],
     },
     "METAS": {
         "headers": ["nome", "descricao", "valor_objetivo", "valor_atual", "data_prevista", "status"],
@@ -64,11 +65,11 @@ IMPORT_SHEETS = {
         "sample": ["Reserva de Emergencia", "Meta inicial", "10000.00", "500.00", "2026-12-31"],
     },
     "PARCELADAS": {
-        "headers": ["descricao", "categoria", "valor_total", "quantidade_parcelas", "data_primeira_parcela", "status", "forma_pagamento", "observacao"],
+        "headers": ["descricao", "categoria", "valor_total", "valor_parcela", "quantidade_parcelas", "data_primeira_parcela", "status", "forma_pagamento", "observacao"],
         "required_headers": ["descricao", "categoria", "valor_total", "quantidade_parcelas", "data_primeira_parcela"],
         "aliases": {"parcelas": "quantidade_parcelas"},
-        "model_headers": ["Descrição", "Categoria", "Valor Total", "Parcelas", "Data Primeira Parcela"],
-        "sample": ["Notebook", "Cartão de Crédito", "3000.00", "10", "2026-06-10"],
+        "model_headers": ["Descrição", "Categoria", "Valor Total", "Valor Parcela", "Parcelas", "Data Primeira Parcela"],
+        "sample": ["Notebook", "Cartão de Crédito", "3000.00", "", "10", "2026-06-10"],
     },
 }
 
@@ -229,6 +230,10 @@ CREATE TABLE IF NOT EXISTS incomes (
     status TEXT NOT NULL CHECK(status IN ('Recebido', 'Pendente')),
     notes TEXT,
     user_id INTEGER,
+    recurring_group TEXT,
+    recurring_number INTEGER,
+    recurring_total INTEGER,
+    cancelled INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -247,6 +252,34 @@ CREATE TABLE IF NOT EXISTS goals (
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_cleanup_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_at TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    data_type TEXT NOT NULL,
+    retention_days INTEGER NOT NULL,
+    deleted_count INTEGER NOT NULL,
+    details TEXT
+);
+
+CREATE TABLE IF NOT EXISTS import_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    filename TEXT,
+    imported_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    errors_count INTEGER NOT NULL DEFAULT 0,
+    is_test INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 """
@@ -305,6 +338,10 @@ CREATE TABLE IF NOT EXISTS incomes (
     status TEXT NOT NULL CHECK(status IN ('Recebido', 'Pendente')),
     notes TEXT,
     user_id INTEGER REFERENCES users(id),
+    recurring_group TEXT,
+    recurring_number INTEGER,
+    recurring_total INTEGER,
+    cancelled INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -323,11 +360,39 @@ CREATE TABLE IF NOT EXISTS goals (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS maintenance_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_cleanup_logs (
+    id SERIAL PRIMARY KEY,
+    run_at TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    data_type TEXT NOT NULL,
+    retention_days INTEGER NOT NULL,
+    deleted_count INTEGER NOT NULL,
+    details TEXT
+);
+
+CREATE TABLE IF NOT EXISTS import_history (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    filename TEXT,
+    imported_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    errors_count INTEGER NOT NULL DEFAULT 0,
+    is_test INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 """
 
 
 def init_db():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         if USE_POSTGRES:
             print("Conectado ao PostgreSQL")
@@ -336,6 +401,7 @@ def init_db():
         ensure_category_columns(conn)
         ensure_financial_columns(conn)
         ensure_goal_table(conn)
+        ensure_maintenance_tables(conn)
         for category in DEFAULT_CATEGORIES:
             insert_default_category(conn, category)
 
@@ -365,6 +431,7 @@ def init_db():
         admin_id = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()["id"]
         conn.execute("UPDATE expenses SET user_id = ? WHERE user_id IS NULL", (admin_id,))
         conn.execute("UPDATE incomes SET user_id = ? WHERE user_id IS NULL", (admin_id,))
+        run_daily_cleanup(conn)
         print("Migração concluída")
 
 
@@ -410,6 +477,14 @@ def ensure_financial_columns(conn):
         conn.execute("ALTER TABLE expenses ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
     if "active" not in income_columns:
         conn.execute("ALTER TABLE incomes ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+    for column, definition in {
+        "recurring_group": "TEXT",
+        "recurring_number": "INTEGER",
+        "recurring_total": "INTEGER",
+        "cancelled": "INTEGER NOT NULL DEFAULT 0",
+    }.items():
+        if column not in income_columns:
+            conn.execute(f"ALTER TABLE incomes ADD COLUMN {column} {definition}")
     for column, definition in {
         "installment_group": "TEXT",
         "installment_number": "INTEGER",
@@ -468,6 +543,241 @@ def ensure_goal_table(conn):
     }.items():
         if column not in columns:
             conn.execute(f"ALTER TABLE goals ADD COLUMN {column} {definition}")
+
+
+def ensure_maintenance_tables(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS maintenance_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS maintenance_cleanup_logs (
+            id SERIAL PRIMARY KEY,
+            run_at TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            data_type TEXT NOT NULL,
+            retention_days INTEGER NOT NULL,
+            deleted_count INTEGER NOT NULL,
+            details TEXT
+        )
+        """
+        if USE_POSTGRES
+        else """
+        CREATE TABLE IF NOT EXISTS maintenance_cleanup_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            data_type TEXT NOT NULL,
+            retention_days INTEGER NOT NULL,
+            deleted_count INTEGER NOT NULL,
+            details TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS import_history (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
+            filename TEXT,
+            imported_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            errors_count INTEGER NOT NULL DEFAULT 0,
+            is_test INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+        if USE_POSTGRES
+        else """
+        CREATE TABLE IF NOT EXISTS import_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            filename TEXT,
+            imported_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            errors_count INTEGER NOT NULL DEFAULT 0,
+            is_test INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    for table, definitions in {
+        "maintenance_cleanup_logs": {
+            "run_at": "TEXT",
+            "mode": "TEXT NOT NULL DEFAULT 'manual'",
+            "data_type": "TEXT NOT NULL DEFAULT 'desconhecido'",
+            "retention_days": "INTEGER NOT NULL DEFAULT 0",
+            "deleted_count": "INTEGER NOT NULL DEFAULT 0",
+            "details": "TEXT",
+        },
+        "import_history": {
+            "user_id": "INTEGER",
+            "filename": "TEXT",
+            "imported_count": "INTEGER NOT NULL DEFAULT 0",
+            "skipped_count": "INTEGER NOT NULL DEFAULT 0",
+            "errors_count": "INTEGER NOT NULL DEFAULT 0",
+            "is_test": "INTEGER NOT NULL DEFAULT 0",
+            "created_at": "TEXT",
+        },
+    }.items():
+        columns = table_columns(conn, table)
+        for column, definition in definitions.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    ensure_maintenance_defaults(conn)
+
+
+DEFAULT_MAINTENANCE_SETTINGS = {
+    "cleanup_logs_days": 90,
+    "import_history_days": 180,
+    "temp_files_days": 30,
+    "test_records_days": 30,
+}
+
+
+def table_exists(conn, table):
+    if USE_POSTGRES:
+        row = conn.execute(
+            """
+            SELECT table_name AS name
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = ?
+            """,
+            (table,),
+        ).fetchone()
+    else:
+        row = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+    return row is not None
+
+
+def set_maintenance_setting(conn, key, value):
+    conn.execute(
+        """
+        INSERT INTO maintenance_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """,
+        (key, str(value), now()),
+    )
+
+
+def ensure_maintenance_defaults(conn):
+    for key, value in DEFAULT_MAINTENANCE_SETTINGS.items():
+        existing = conn.execute("SELECT value FROM maintenance_settings WHERE key = ?", (key,)).fetchone()
+        if not existing:
+            set_maintenance_setting(conn, key, value)
+
+
+def maintenance_settings(conn):
+    ensure_maintenance_defaults(conn)
+    rows = conn.execute("SELECT key, value FROM maintenance_settings").fetchall()
+    settings = {row["key"]: int(row["value"]) for row in rows if str(row["value"]).isdigit()}
+    for key, value in DEFAULT_MAINTENANCE_SETTINGS.items():
+        settings.setdefault(key, value)
+    return settings
+
+
+def count_where(conn, table, where, params=()):
+    row = conn.execute(f"SELECT COUNT(*) AS total FROM {table} WHERE {where}", params).fetchone()
+    return int(row["total"] or 0)
+
+
+def delete_where(conn, table, where, params=()):
+    return conn.execute(f"DELETE FROM {table} WHERE {where}", params).rowcount
+
+
+def log_cleanup(conn, run_at, mode, data_type, retention_days, deleted_count, details=""):
+    conn.execute(
+        """
+        INSERT INTO maintenance_cleanup_logs
+        (run_at, mode, data_type, retention_days, deleted_count, details)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (run_at, mode, data_type, retention_days, int(deleted_count), details),
+    )
+
+
+def cleanup_table_before(conn, run_at, mode, table, data_type, date_column, days, extra_where="", extra_params=(), details=""):
+    cutoff = (datetime.now() - timedelta(days=int(days))).replace(microsecond=0).isoformat()
+    where = f"{date_column} < ?"
+    params = [cutoff]
+    if extra_where:
+        where += f" AND {extra_where}"
+        params.extend(extra_params)
+    total = count_where(conn, table, where, params)
+    log_cleanup(conn, run_at, mode, data_type, days, total, details or f"Registros anteriores a {cutoff}")
+    if total:
+        delete_where(conn, table, where, params)
+    return {"type": data_type, "deleted": total, "retention_days": int(days)}
+
+
+def cleanup_expired_sessions(conn, run_at, mode):
+    current = now()
+    total = count_where(conn, "sessions", "expires_at <= ?", (current,))
+    log_cleanup(conn, run_at, mode, "sessions_expiradas", 0, total, f"Sessoes vencidas ate {current}")
+    if total:
+        delete_where(conn, "sessions", "expires_at <= ?", (current,))
+    return {"type": "sessions_expiradas", "deleted": total, "retention_days": 0}
+
+
+def cleanup_expired_tokens(conn, run_at, mode):
+    if not table_exists(conn, "tokens") or "expires_at" not in table_columns(conn, "tokens"):
+        log_cleanup(conn, run_at, mode, "tokens_vencidos", 0, 0, "Tabela tokens nao existe")
+        return {"type": "tokens_vencidos", "deleted": 0, "retention_days": 0}
+    current = now()
+    total = count_where(conn, "tokens", "expires_at <= ?", (current,))
+    log_cleanup(conn, run_at, mode, "tokens_vencidos", 0, total, f"Tokens vencidos ate {current}")
+    if total:
+        delete_where(conn, "tokens", "expires_at <= ?", (current,))
+    return {"type": "tokens_vencidos", "deleted": total, "retention_days": 0}
+
+
+def cleanup_temp_files(conn, run_at, mode, days):
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    cutoff = datetime.now() - timedelta(days=int(days))
+    files = []
+    for path in TEMP_DIR.rglob("*"):
+        if path.is_file() and datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
+            files.append(path)
+    log_cleanup(conn, run_at, mode, "arquivos_temporarios", days, len(files), f"Diretorio: {TEMP_DIR}")
+    for path in files:
+        try:
+            path.unlink()
+        except OSError as exc:
+            print(f"[manutencao] falha ao remover arquivo temporario {path}: {exc}")
+    return {"type": "arquivos_temporarios", "deleted": len(files), "retention_days": int(days)}
+
+
+def run_cleanup(conn, mode="manual"):
+    settings = maintenance_settings(conn)
+    run_at = now()
+    report = [
+        cleanup_expired_sessions(conn, run_at, mode),
+        cleanup_expired_tokens(conn, run_at, mode),
+        cleanup_table_before(conn, run_at, mode, "maintenance_cleanup_logs", "logs_manutencao", "run_at", settings["cleanup_logs_days"]),
+        cleanup_table_before(conn, run_at, mode, "import_history", "registros_teste", "created_at", settings["test_records_days"], "is_test = 1", details="Somente historico de importacao marcado como teste"),
+        cleanup_table_before(conn, run_at, mode, "import_history", "historico_importacoes", "created_at", settings["import_history_days"]),
+        cleanup_temp_files(conn, run_at, mode, settings["temp_files_days"]),
+    ]
+    return {"run_at": run_at, "mode": mode, "report": report}
+
+
+def run_daily_cleanup(conn):
+    last = conn.execute(
+        "SELECT run_at FROM maintenance_cleanup_logs WHERE mode = ? ORDER BY run_at DESC LIMIT 1",
+        ("automatico",),
+    ).fetchone()
+    if last and str(last["run_at"])[:10] == today_iso():
+        return
+    result = run_cleanup(conn, "automatico")
+    print(f"[manutencao] limpeza automatica concluida em {result['run_at']}")
 
 
 def now():
@@ -641,6 +951,14 @@ def clean_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def is_yes(value):
+    return str(value or "").strip().lower() in ("sim", "s", "true", "1", "yes")
+
+
+def base_installment_description(description):
+    return re.sub(r"\s*\(\d+\s*/\s*\d+\)\s*$", "", str(description or "").strip())
 
 
 def require_fields(data, fields):
@@ -904,6 +1222,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                     return self.handle_cashflow(params)
                 if path == "/api/import/template":
                     return self.handle_import_template()
+                if path == "/api/maintenance":
+                    return self.handle_maintenance_status()
                 return self.send_error_json("Rota nao encontrada", HTTPStatus.NOT_FOUND)
             return super().do_GET()
         except Exception as exc:
@@ -935,6 +1255,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 return self.handle_import_preview(data)
             if path == "/api/import/commit":
                 return self.handle_import_commit(data)
+            if path == "/api/maintenance/run":
+                return self.handle_run_maintenance()
             if self.require_user() is None:
                 return
             if path == "/api/expenses":
@@ -953,6 +1275,12 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             if path.startswith("/api/expenses/") and path.endswith("/cancel-future"):
                 expense_id = int(path.split("/")[3])
                 return self.handle_cancel_future_installments(expense_id)
+            if path.startswith("/api/incomes/") and path.endswith("/receive"):
+                income_id = int(path.split("/")[3])
+                return self.handle_receive_income(income_id)
+            if path.startswith("/api/incomes/") and path.endswith("/cancel-future"):
+                income_id = int(path.split("/")[3])
+                return self.handle_cancel_future_incomes(income_id)
             if path.startswith("/api/goals/") and path.endswith("/add"):
                 goal_id = int(path.split("/")[3])
                 return self.handle_goal_amount(goal_id, data, "add")
@@ -975,6 +1303,8 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 return self.handle_update_user(int(path.split("/")[3]), data)
             if path.startswith("/api/categories/"):
                 return self.handle_update_category(int(path.split("/")[3]), data)
+            if path == "/api/maintenance/settings":
+                return self.handle_update_maintenance_settings(data)
             if path.startswith("/api/expenses/"):
                 return self.handle_update_expense(int(path.split("/")[3]), data)
             if path.startswith("/api/incomes/"):
@@ -1221,6 +1551,45 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return self.send_error_json("Categoria nao encontrada", HTTPStatus.NOT_FOUND)
         self.send_json({"ok": True, "deactivated": True})
 
+    def handle_maintenance_status(self):
+        if self.require_superadmin() is None:
+            return
+        with connect() as conn:
+            settings = maintenance_settings(conn)
+            last = conn.execute("SELECT * FROM maintenance_cleanup_logs ORDER BY run_at DESC, id DESC LIMIT 1").fetchone()
+            logs = conn.execute("SELECT * FROM maintenance_cleanup_logs ORDER BY run_at DESC, id DESC LIMIT 50").fetchall()
+        self.send_json({
+            "settings": settings,
+            "last_cleanup": row_to_dict(last),
+            "logs": [row_to_dict(row) for row in logs],
+        })
+
+    def handle_update_maintenance_settings(self, data):
+        if self.require_superadmin() is None:
+            return
+        with connect() as conn:
+            for key in DEFAULT_MAINTENANCE_SETTINGS:
+                if key not in data:
+                    continue
+                try:
+                    value = int(data.get(key))
+                except (TypeError, ValueError):
+                    raise ValueError("Dias de manutencao devem ser numeros inteiros")
+                if value < 1 or value > 3650:
+                    raise ValueError("Dias de manutencao devem ficar entre 1 e 3650")
+                set_maintenance_setting(conn, key, value)
+            settings = maintenance_settings(conn)
+        self.send_json({"settings": settings})
+
+    def handle_run_maintenance(self):
+        if self.require_superadmin() is None:
+            return
+        with connect() as conn:
+            result = run_cleanup(conn, "manual")
+            settings = maintenance_settings(conn)
+            logs = conn.execute("SELECT * FROM maintenance_cleanup_logs ORDER BY run_at DESC, id DESC LIMIT 50").fetchall()
+        self.send_json({"result": result, "settings": settings, "logs": [row_to_dict(row) for row in logs]})
+
     def handle_dashboard(self, params):
         user = self.require_user()
         if user is None:
@@ -1236,7 +1605,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 (start, end, *scope_values),
             ).fetchall()
             incomes = conn.execute(
-                f"SELECT * FROM incomes WHERE active = 1 AND receipt_date >= ? AND receipt_date < ?{scope_sql} ORDER BY receipt_date",
+                f"SELECT * FROM incomes WHERE active = 1 AND cancelled = 0 AND receipt_date >= ? AND receipt_date < ?{scope_sql} ORDER BY receipt_date",
                 (start, end, *scope_values),
             ).fetchall()
             upcoming = conn.execute(
@@ -1309,7 +1678,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         if user is None:
             return
         where, values = filters_to_sql(params, "incomes")
-        where = (where + " AND active = 1") if where else " WHERE active = 1"
+        where = (where + " AND active = 1 AND cancelled = 0") if where else " WHERE active = 1 AND cancelled = 0"
         where, values = apply_user_scope(where, values, user, params)
         with connect() as conn:
             rows = conn.execute(f"SELECT * FROM incomes{where} ORDER BY receipt_date DESC, id DESC", values).fetchall()
@@ -1337,7 +1706,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return
         payload = expense_payload(data)
         stamp = now()
-        is_installment = str(data.get("is_installment", "Não")).lower() in ("sim", "s", "true", "1", "yes")
+        is_installment = is_yes(data.get("is_installment", "Nao"))
         installment_total = clean_int(data.get("installment_total"), 1) if is_installment else 1
         first_due_date = str(data.get("first_due_date") or payload["due_date"]).strip()
         if installment_total < 1:
@@ -1385,32 +1754,13 @@ class FinanceHandler(SimpleHTTPRequestHandler):
         if user is None:
             return
         payload = expense_payload(data)
+        update_scope = str(data.get("update_scope", "single")).strip()
         scope_sql, scope_values = owned_update_suffix(user)
         with connect() as conn:
-            cur = conn.execute(
-                f"""
-                UPDATE expenses
-                SET description = ?, category = ?, amount = ?, due_date = ?, status = ?,
-                    payment_method = ?, notes = ?, payment_date = ?, updated_at = ?
-                WHERE id = ?{scope_sql}
-                """,
-                (
-                    payload["description"],
-                    payload["category"],
-                    payload["amount"],
-                    payload["due_date"],
-                    payload["status"],
-                    payload["payment_method"],
-                    payload["notes"],
-                    payload["payment_date"],
-                    now(),
-                    expense_id,
-                    *scope_values,
-                ),
-            )
-        if cur.rowcount == 0:
+            affected = update_expense_records(conn, expense_id, payload, update_scope, scope_sql, scope_values)
+        if affected == 0:
             return self.send_error_json("Conta nao encontrada", HTTPStatus.NOT_FOUND)
-        self.send_json({"ok": True})
+        self.send_json({"ok": True, "updated": affected})
 
     def handle_pay_expense(self, expense_id, data):
         user = self.require_user()
@@ -1460,56 +1810,95 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             return
         payload = income_payload(data)
         stamp = now()
+        is_recurring = is_yes(data.get("is_recurring") or data.get("recorrente"))
+        recurring_total = clean_int(data.get("recurring_total") or data.get("quantidade_parcelas"), 1) if is_recurring else 1
+        first_receipt_date = str(data.get("first_receipt_date") or data.get("data_primeiro_recebimento") or payload["receipt_date"]).strip()
+        amount_per_item = clean_money(data.get("recurring_amount") or data.get("valor_parcela") or payload["amount"]) if is_recurring else payload["amount"]
+        if recurring_total < 1:
+            raise ValueError("Quantidade de meses/parcelas invalida")
+        recurring_group = secrets.token_hex(8) if is_recurring else None
+        created_ids = []
         with connect() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO incomes
-                (description, category, amount, receipt_date, status, notes, user_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    payload["description"],
-                    payload["category"],
-                    payload["amount"],
-                    payload["receipt_date"],
-                    payload["status"],
-                    payload["notes"],
-                    user["id"],
-                    stamp,
-                    stamp,
-                ),
-            )
-        self.send_json({"id": cur.lastrowid}, HTTPStatus.CREATED)
+            for index in range(recurring_total):
+                recurring_number = index + 1 if is_recurring else None
+                description = payload["description"]
+                receipt_date = payload["receipt_date"]
+                if is_recurring:
+                    description = f"{payload['description']} ({index + 1}/{recurring_total})"
+                    receipt_date = add_months(first_receipt_date, index)
+                cur = conn.execute(
+                    """
+                    INSERT INTO incomes
+                    (description, category, amount, receipt_date, status, notes, user_id,
+                     recurring_group, recurring_number, recurring_total, cancelled, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    """,
+                    (
+                        description,
+                        payload["category"],
+                        amount_per_item,
+                        receipt_date,
+                        payload["status"],
+                        payload["notes"],
+                        user["id"],
+                        recurring_group,
+                        recurring_number,
+                        recurring_total if is_recurring else None,
+                        stamp,
+                        stamp,
+                    ),
+                )
+                created_ids.append(cur.lastrowid)
+        self.send_json({"id": created_ids[0], "ids": created_ids, "recurrences": len(created_ids)}, HTTPStatus.CREATED)
 
     def handle_update_income(self, income_id, data):
         user = self.require_user()
         if user is None:
             return
         payload = income_payload(data)
+        update_scope = str(data.get("update_scope", "single")).strip()
+        scope_sql, scope_values = owned_update_suffix(user)
+        with connect() as conn:
+            affected = update_income_records(conn, income_id, payload, update_scope, scope_sql, scope_values)
+        if affected == 0:
+            return self.send_error_json("Receita nao encontrada", HTTPStatus.NOT_FOUND)
+        self.send_json({"ok": True, "updated": affected})
+
+    def handle_receive_income(self, income_id):
+        user = self.require_user()
+        if user is None:
+            return
         scope_sql, scope_values = owned_update_suffix(user)
         with connect() as conn:
             cur = conn.execute(
-                f"""
-                UPDATE incomes
-                SET description = ?, category = ?, amount = ?, receipt_date = ?, status = ?,
-                    notes = ?, updated_at = ?
-                WHERE id = ?{scope_sql}
-                """,
-                (
-                    payload["description"],
-                    payload["category"],
-                    payload["amount"],
-                    payload["receipt_date"],
-                    payload["status"],
-                    payload["notes"],
-                    now(),
-                    income_id,
-                    *scope_values,
-                ),
+                f"UPDATE incomes SET status = 'Recebido', updated_at = ? WHERE id = ?{scope_sql}",
+                (now(), income_id, *scope_values),
             )
         if cur.rowcount == 0:
             return self.send_error_json("Receita nao encontrada", HTTPStatus.NOT_FOUND)
         self.send_json({"ok": True})
+
+    def handle_cancel_future_incomes(self, income_id):
+        user = self.require_user()
+        if user is None:
+            return
+        scope_sql, scope_values = owned_update_suffix(user)
+        with connect() as conn:
+            row = conn.execute(
+                f"SELECT recurring_group, recurring_number FROM incomes WHERE id = ?{scope_sql}",
+                (income_id, *scope_values),
+            ).fetchone()
+            if not row or not row["recurring_group"]:
+                return self.send_error_json("Receita recorrente nao encontrada", HTTPStatus.NOT_FOUND)
+            cur = conn.execute(
+                f"""
+                UPDATE incomes
+                SET cancelled = 1, updated_at = ?
+                WHERE recurring_group = ? AND status != 'Recebido' AND recurring_number > ?{scope_sql}
+                """,
+                (now(), row["recurring_group"], row["recurring_number"], *scope_values),
+            )
+        self.send_json({"ok": True, "cancelled": cur.rowcount})
 
     def handle_list_goals(self, params):
         user = self.require_user()
@@ -1659,7 +2048,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 f"""
                 SELECT substr(receipt_date, 1, 7) AS month, COALESCE(SUM(amount), 0) AS total
                 FROM incomes
-                WHERE receipt_date >= ?{scope_sql}
+                WHERE cancelled = 0 AND receipt_date >= ?{scope_sql}
                 GROUP BY substr(receipt_date, 1, 7)
                 """,
                 (months[0] + "-01", *scope_values),
@@ -1692,7 +2081,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 year, month_num = map(int, month.split("-"))
                 start, end = month_range(year, month_num)
                 income = conn.execute(
-                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM incomes WHERE receipt_date >= ? AND receipt_date < ?{scope_sql}",
+                    f"SELECT COALESCE(SUM(amount), 0) AS total FROM incomes WHERE cancelled = 0 AND receipt_date >= ? AND receipt_date < ?{scope_sql}",
                     (start, end, *scope_values),
                 ).fetchone()["total"]
                 expense = conn.execute(
@@ -1882,7 +2271,24 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 raise ValueError("Descricao e categoria sao obrigatorias")
             if status not in ("Recebido", "Pendente"):
                 raise ValueError("Status de receita invalido")
-            return {"sheet": sheet_name, "line": row_number, "tipo": "receita", "description": description, "category": category, "amount": clean_money(row.get("valor")), "receipt_date": clean_date(row.get("data_recebimento")), "status": status, "notes": str(row.get("observacao", "")).strip()}
+            recurring = is_yes(row.get("recorrente"))
+            total = clean_int(row.get("quantidade_parcelas"), 1) if recurring else 1
+            if recurring and total <= 0:
+                raise ValueError("Quantidade de parcelas deve ser maior que zero")
+            return {
+                "sheet": sheet_name,
+                "line": row_number,
+                "tipo": "receita",
+                "description": description,
+                "category": category,
+                "amount": clean_money(row.get("valor")),
+                "receipt_date": clean_date(row.get("data_recebimento")),
+                "status": status,
+                "notes": str(row.get("observacao", "")).strip(),
+                "recurring": recurring,
+                "recurring_total": total,
+                "first_receipt_date": clean_date(row.get("data_primeiro_recebimento") or row.get("data_recebimento")) if recurring else "",
+            }
         if sheet_name == "METAS":
             name = str(row.get("nome", "")).strip()
             if not name:
@@ -1899,7 +2305,20 @@ class FinanceHandler(SimpleHTTPRequestHandler):
             total = int(float(str(row.get("quantidade_parcelas", "")).replace(",", ".") or 0))
             if total <= 0:
                 raise ValueError("Quantidade de parcelas deve ser maior que zero")
-            return {"sheet": sheet_name, "line": row_number, "tipo": "parcelada", "description": description, "category": category, "total_amount": clean_money(row.get("valor_total")), "installment_total": total, "first_due_date": clean_date(row.get("data_primeira_parcela")), "status": status, "payment_method": str(row.get("forma_pagamento", "")).strip(), "notes": str(row.get("observacao", "")).strip()}
+            return {
+                "sheet": sheet_name,
+                "line": row_number,
+                "tipo": "parcelada",
+                "description": description,
+                "category": category,
+                "total_amount": clean_money(row.get("valor_total")),
+                "installment_amount": clean_money(row.get("valor_parcela")) if str(row.get("valor_parcela", "")).strip() else None,
+                "installment_total": total,
+                "first_due_date": clean_date(row.get("data_primeira_parcela")),
+                "status": status,
+                "payment_method": str(row.get("forma_pagamento", "")).strip(),
+                "notes": str(row.get("observacao", "")).strip(),
+            }
         raise ValueError("Aba nao suportada")
 
     def handle_import_preview(self, data):
@@ -1931,7 +2350,117 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 created = insert_import_row(conn, row, target_user_id, stamp)
                 imported += created
                 skipped += 0 if created else 1
+            conn.execute(
+                """
+                INSERT INTO import_history
+                (user_id, filename, imported_count, skipped_count, errors_count, is_test, created_at)
+                VALUES (?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    target_user_id,
+                    str(data.get("filename", "")).strip(),
+                    imported,
+                    skipped,
+                    1 if data.get("is_test") else 0,
+                    stamp,
+                ),
+            )
         self.send_json({"imported": imported, "skipped": skipped, "errors": []})
+
+
+def group_update_rows(conn, table, id_value, group_field, number_field, scope_sql, scope_values, update_scope):
+    current = conn.execute(
+        f"SELECT * FROM {table} WHERE id = ?{scope_sql}",
+        (id_value, *scope_values),
+    ).fetchone()
+    if not current:
+        return current, []
+    group = current[group_field]
+    if update_scope == "single" or not group:
+        return current, [current]
+    where = f"{group_field} = ?"
+    values = [group]
+    if update_scope == "future":
+        where += f" AND {number_field} >= ?"
+        values.append(current[number_field])
+    elif update_scope != "all":
+        return current, [current]
+    if scope_sql:
+        where += scope_sql.replace(" AND ", " AND ", 1)
+        values.extend(scope_values)
+    rows = conn.execute(f"SELECT * FROM {table} WHERE {where} ORDER BY {number_field}, id", values).fetchall()
+    return current, rows
+
+
+def update_expense_records(conn, expense_id, payload, update_scope, scope_sql, scope_values):
+    current, rows = group_update_rows(conn, "expenses", expense_id, "installment_group", "installment_number", scope_sql, scope_values, update_scope)
+    if not rows:
+        return 0
+    stamp = now()
+    base_description = base_installment_description(payload["description"])
+    for row in rows:
+        description = payload["description"]
+        due_date = payload["due_date"]
+        if update_scope != "single" and current["installment_group"]:
+            description = f"{base_description} ({row['installment_number']}/{row['installment_total']})"
+            due_date = add_months(payload["due_date"], int(row["installment_number"]) - int(current["installment_number"]))
+        conn.execute(
+            f"""
+            UPDATE expenses
+            SET description = ?, category = ?, amount = ?, due_date = ?, status = ?,
+                payment_method = ?, notes = ?, payment_date = ?, updated_at = ?
+            WHERE id = ?{scope_sql}
+            """,
+            (
+                description,
+                payload["category"],
+                payload["amount"],
+                due_date,
+                payload["status"],
+                payload["payment_method"],
+                payload["notes"],
+                payload["payment_date"],
+                stamp,
+                row["id"],
+                *scope_values,
+            ),
+        )
+    return len(rows)
+
+
+def update_income_records(conn, income_id, payload, update_scope, scope_sql, scope_values):
+    current, rows = group_update_rows(conn, "incomes", income_id, "recurring_group", "recurring_number", scope_sql, scope_values, update_scope)
+    if not rows:
+        return 0
+    stamp = now()
+    base_description = base_installment_description(payload["description"])
+    for row in rows:
+        description = payload["description"]
+        receipt_date = payload["receipt_date"]
+        if update_scope != "single" and current["recurring_group"]:
+            description = f"{base_description} ({row['recurring_number']}/{row['recurring_total']})"
+            receipt_date = add_months(payload["receipt_date"], int(row["recurring_number"]) - int(current["recurring_number"]))
+        conn.execute(
+            f"""
+            UPDATE incomes
+            SET description = ?, category = ?, amount = ?, receipt_date = ?, status = ?,
+                notes = ?, updated_at = ?
+            WHERE id = ?{scope_sql}
+            """,
+            (
+                description,
+                payload["category"],
+                payload["amount"],
+                receipt_date,
+                payload["status"],
+                payload["notes"],
+                stamp,
+                row["id"],
+                *scope_values,
+            ),
+        )
+    return len(rows)
+
 
 def duplicate_exists(conn, table, where, values):
     row = conn.execute(f"SELECT id FROM {table} WHERE active = 1 AND {where} LIMIT 1", values).fetchone()
@@ -1958,6 +2487,31 @@ def insert_import_row(conn, row, user_id, stamp):
         )
         return 1
     if kind == "receita":
+        if row.get("recurring"):
+            total = int(row.get("recurring_total") or 1)
+            group = hashlib.sha256(f'{user_id}|{row["description"]}|{row["category"]}|{row["amount"]}|{row["first_receipt_date"]}|{total}'.encode("utf-8")).hexdigest()[:16]
+            created = 0
+            for number in range(1, total + 1):
+                receipt_date = add_months(row["first_receipt_date"], number - 1)
+                description = f'{row["description"]} ({number}/{total})'
+                if duplicate_exists(
+                    conn,
+                    "incomes",
+                    "user_id = ? AND description = ? AND category = ? AND amount = ? AND receipt_date = ?",
+                    (user_id, description, row["category"], row["amount"], receipt_date),
+                ):
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO incomes
+                    (description, category, amount, receipt_date, status, notes, user_id, active,
+                     recurring_group, recurring_number, recurring_total, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                    """,
+                    (description, row["category"], row["amount"], receipt_date, row["status"], row.get("notes", ""), user_id, group, number, total, stamp, stamp),
+                )
+                created += 1
+            return created
         if duplicate_exists(
             conn,
             "incomes",
@@ -1993,7 +2547,7 @@ def insert_import_row(conn, row, user_id, stamp):
         return 1
     if kind == "parcelada":
         total = int(row["installment_total"])
-        amount = round(row["total_amount"] / total, 2)
+        amount = round(row["installment_amount"] if row.get("installment_amount") is not None else row["total_amount"] / total, 2)
         group = hashlib.sha256(f'{user_id}|{row["description"]}|{row["category"]}|{row["total_amount"]}|{row["first_due_date"]}|{total}'.encode("utf-8")).hexdigest()[:16]
         created = 0
         for number in range(1, total + 1):
@@ -2039,7 +2593,7 @@ def build_report(params, user):
             (start, end, *scope_values),
         ).fetchall()]
         incomes = [] if movement_type == "Despesa" else [row_to_dict(row) for row in conn.execute(
-            f"SELECT * FROM incomes WHERE active = 1 AND receipt_date >= ? AND receipt_date < ?{scope_sql} ORDER BY receipt_date, id",
+            f"SELECT * FROM incomes WHERE active = 1 AND cancelled = 0 AND receipt_date >= ? AND receipt_date < ?{scope_sql} ORDER BY receipt_date, id",
             (start, end, *scope_values),
         ).fetchall()]
 
@@ -2084,3 +2638,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+

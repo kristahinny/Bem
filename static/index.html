@@ -112,6 +112,7 @@
             <label>Compra parcelada<select id="isInstallment" name="is_installment"><option>Não</option><option>Sim</option></select></label>
             <label class="installment-fields hidden">Quantidade de parcelas<input name="installment_total" type="number" min="2" value="2"></label>
             <label class="installment-fields hidden">Primeira parcela<input name="first_due_date" type="date"></label>
+            <p id="expenseGroupInfo" class="message wide"></p>
             <label class="wide">Observacao<textarea name="notes" rows="2"></textarea></label>
             <button class="primary" type="submit">Salvar conta</button>
           </form>
@@ -136,6 +137,11 @@
             <label>Valor<input name="amount" type="number" step="0.01" min="0" required></label>
             <label>Recebimento<input name="receipt_date" type="date" required></label>
             <label>Status<select name="status"><option>Recebido</option><option>Pendente</option></select></label>
+            <label>Receita recorrente ou parcelada?<select id="isRecurringIncome" name="is_recurring"><option>Não</option><option>Sim</option></select></label>
+            <label class="income-recurring-fields hidden">Quantidade de meses/parcelas<input name="recurring_total" type="number" min="2" value="2"></label>
+            <label class="income-recurring-fields hidden">Primeiro recebimento<input name="first_receipt_date" type="date"></label>
+            <label class="income-recurring-fields hidden">Valor por mês/parcela<input name="recurring_amount" type="number" step="0.01" min="0"></label>
+            <p id="incomeGroupInfo" class="message wide"></p>
             <label class="wide">Observacao<textarea name="notes" rows="2"></textarea></label>
             <button class="primary" type="submit">Salvar receita</button>
           </form>
@@ -146,7 +152,7 @@
             <select id="incomeStatus"><option value="">Todos os status</option><option>Recebido</option><option>Pendente</option></select>
             <select id="incomeCategory"><option value="">Todas categorias</option></select>
           </div>
-          <div class="table-wrap"><table><thead><tr><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Data</th><th>Status</th><th>Acoes</th></tr></thead><tbody id="incomesTable"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Data</th><th>Status</th><th>Parcela</th><th>Acoes</th></tr></thead><tbody id="incomesTable"></tbody></table></div>
         </div>
       </section>
 
@@ -208,6 +214,7 @@
           <button class="settings-tab-btn" data-settings-tab="import" type="button">Importacao Excel</button>
           <button class="settings-tab-btn" data-settings-tab="profile" type="button">Perfil / Senha</button>
           <button class="settings-tab-btn superadmin-only hidden" data-settings-tab="security" type="button">Seguranca</button>
+          <button class="settings-tab-btn superadmin-only hidden" data-settings-tab="maintenance" type="button">Manutencao</button>
         </div>
 
         <div class="panel settings-panel superadmin-only hidden" data-settings-panel="users">
@@ -262,6 +269,24 @@
         <div class="panel settings-panel superadmin-only hidden" data-settings-panel="security">
           <h3>Seguranca</h3>
           <p class="message">Permissoes administrativas continuam protegidas no backend. Usuarios comuns nao acessam rotas de usuarios ou categorias administrativas.</p>
+        </div>
+
+        <div class="panel settings-panel superadmin-only hidden" data-settings-panel="maintenance">
+          <div class="section-head"><h3>Manutencao</h3><button id="runMaintenance" class="primary" type="button">Executar limpeza manual</button></div>
+          <form id="maintenanceForm" class="grid-form">
+            <label>Logs com mais de<input name="cleanup_logs_days" type="number" min="1" max="3650" required><span>dias</span></label>
+            <label>Historico de importacoes com mais de<input name="import_history_days" type="number" min="1" max="3650" required><span>dias</span></label>
+            <label>Arquivos temporarios com mais de<input name="temp_files_days" type="number" min="1" max="3650" required><span>dias</span></label>
+            <label>Registros de teste com mais de<input name="test_records_days" type="number" min="1" max="3650" required><span>dias</span></label>
+            <button class="primary" type="submit">Salvar configuracoes</button>
+          </form>
+          <p id="maintenanceLast" class="message"></p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Data</th><th>Modo</th><th>Tipo</th><th>Dias</th><th>Removidos</th><th>Detalhes</th></tr></thead>
+              <tbody id="maintenanceLogs"></tbody>
+            </table>
+          </div>
         </div>
       </section>
     </section>

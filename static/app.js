@@ -20,7 +20,7 @@ const on = (selector, event, handler) => {
   if (element) element.addEventListener(event, handler);
 };
 const money = (value) => Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-const fmtDate = (value) => value ? value.split("-").reverse().join("/") : "";
+const fmtDate = (value) => value ? String(value).slice(0, 10).split("-").reverse().join("/") : "";
 
 const months = [
   "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho",
@@ -121,7 +121,7 @@ function setView(view) {
 
 function visibleSettingsTabs() {
   const isSuperAdmin = state.user?.profile === "superadmin";
-  return isSuperAdmin ? ["users", "categories", "import", "profile", "security"] : ["import", "profile"];
+  return isSuperAdmin ? ["users", "categories", "import", "profile", "security", "maintenance"] : ["import", "profile"];
 }
 
 function setSettingsTab(tab) {
@@ -251,12 +251,15 @@ async function loadIncomes() {
       <td>${money(item.amount)}</td>
       <td>${fmtDate(item.receipt_date)}</td>
       <td><span class="pill ${item.status}">${item.status}</span></td>
+      <td>${item.recurring_total ? `${item.recurring_number}/${item.recurring_total}` : "-"}</td>
       <td class="actions">
+        ${item.status !== "Recebido" ? `<button class="success" onclick="receiveIncome(${item.id})">Receber</button>` : ""}
+        ${item.recurring_group ? `<button class="danger" onclick="cancelFutureIncomes(${item.id})">Cancelar futuras</button>` : ""}
         <button class="edit" onclick="editIncome(${item.id})">Editar</button>
         <button class="danger" onclick="deleteIncome(${item.id})">Excluir</button>
       </td>
     </tr>
-  `).join("") || `<tr><td colspan="6">Nenhuma receita cadastrada.</td></tr>`;
+  `).join("") || `<tr><td colspan="7">Nenhuma receita cadastrada.</td></tr>`;
 }
 
 async function loadReport() {
@@ -336,6 +339,38 @@ async function loadManagedCategories() {
   `).join("") || `<tr><td colspan="3">Nenhuma categoria cadastrada.</td></tr>`;
 }
 
+function fillMaintenanceSettings(settings) {
+  const form = $("#maintenanceForm");
+  if (!form) return;
+  Object.entries(settings || {}).forEach(([key, value]) => {
+    if (form.elements[key]) form.elements[key].value = value;
+  });
+}
+
+function renderMaintenanceLogs(logs) {
+  const target = $("#maintenanceLogs");
+  if (!target) return;
+  target.innerHTML = (logs || []).map((item) => `
+    <tr>
+      <td>${fmtDate(item.run_at)}</td>
+      <td>${escapeHtml(item.mode)}</td>
+      <td>${escapeHtml(item.data_type)}</td>
+      <td>${item.retention_days}</td>
+      <td>${item.deleted_count}</td>
+      <td>${escapeHtml(item.details || "")}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="6">Nenhuma limpeza registrada.</td></tr>`;
+}
+
+async function loadMaintenance() {
+  if (state.user?.profile !== "superadmin") return;
+  const data = await api("/api/maintenance");
+  fillMaintenanceSettings(data.settings);
+  const last = data.last_cleanup;
+  $("#maintenanceLast").textContent = last ? `Ultima limpeza: ${fmtDate(last.run_at)} - ${last.mode}` : "Nenhuma limpeza registrada.";
+  renderMaintenanceLogs(data.logs);
+}
+
 function reportRows(items, dateField) {
   return items.map((item) => `
     <tr><td>${escapeHtml(item.description)}</td><td>${fmtDate(item[dateField])}</td><td>${money(item.amount)}</td><td><span class="pill ${item.status}">${item.status}</span></td></tr>
@@ -353,6 +388,7 @@ async function refreshAll() {
     if (state.view === "settings") {
       if (state.user?.profile === "superadmin" && state.settingsTab === "users") await loadUsers();
       if (state.user?.profile === "superadmin" && state.settingsTab === "categories") await loadManagedCategories();
+      if (state.user?.profile === "superadmin" && state.settingsTab === "maintenance") await loadMaintenance();
     }
   } catch (error) {
     toast(error.message);
@@ -374,6 +410,11 @@ function clearForm(form) {
   if (!form || typeof form.reset !== "function") return;
   form.reset();
   if (form.elements.id) form.elements.id.value = "";
+  if (form.id === "expenseForm" && $("#expenseGroupInfo")) $("#expenseGroupInfo").textContent = "";
+  if (form.id === "incomeForm") {
+    if ($("#incomeGroupInfo")) $("#incomeGroupInfo").textContent = "";
+    toggleIncomeRecurringFields();
+  }
 }
 
 function setPeriodFromDate(value) {
@@ -419,6 +460,7 @@ async function saveExpense(event) {
   const data = formData(form);
   const id = data.id;
   delete data.id;
+  if (id) data.update_scope = updateScopeForItem(state.expenses.find((row) => row.id === Number(id)), "despesa");
   await api(id ? `/api/expenses/${id}` : "/api/expenses", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
   revealSavedExpense(data);
   clearForm(form);
@@ -433,6 +475,7 @@ async function saveIncome(event) {
   const data = formData(form);
   const id = data.id;
   delete data.id;
+  if (id) data.update_scope = updateScopeForItem(state.incomes.find((row) => row.id === Number(id)), "receita");
   await api(id ? `/api/incomes/${id}` : "/api/incomes", { method: id ? "PUT" : "POST", body: JSON.stringify(data) });
   revealSavedIncome(data);
   clearForm(form);
@@ -481,12 +524,52 @@ async function saveCategory(event) {
   await loadManagedCategories();
 }
 
+async function saveMaintenanceSettings(event) {
+  event.preventDefault();
+  const data = formData(event.currentTarget);
+  await api("/api/maintenance/settings", { method: "PUT", body: JSON.stringify(data) });
+  toast("Configuracoes de manutencao salvas.");
+  await loadMaintenance();
+}
+
+async function runMaintenance() {
+  const data = await api("/api/maintenance/run", { method: "POST", body: "{}" });
+  const total = (data.result?.report || []).reduce((sum, item) => sum + Number(item.deleted || 0), 0);
+  toast(`Limpeza concluida. ${total} itens removidos.`);
+  fillMaintenanceSettings(data.settings);
+  renderMaintenanceLogs(data.logs);
+  $("#maintenanceLast").textContent = `Ultima limpeza: ${fmtDate(data.result.run_at)} - ${data.result.mode}`;
+}
+
 function toggleInstallmentFields() {
   const show = $("#isInstallment")?.value === "Sim";
   $$(".installment-fields").forEach((field) => field.classList.toggle("hidden", !show));
   const dueDate = $("#expenseForm")?.elements?.due_date?.value;
   const firstDue = $("#expenseForm")?.elements?.first_due_date;
   if (show && firstDue && !firstDue.value) firstDue.value = dueDate || "";
+}
+
+function toggleIncomeRecurringFields() {
+  const show = $("#isRecurringIncome")?.value === "Sim";
+  $$(".income-recurring-fields").forEach((field) => field.classList.toggle("hidden", !show));
+  const receiptDate = $("#incomeForm")?.elements?.receipt_date?.value;
+  const firstReceipt = $("#incomeForm")?.elements?.first_receipt_date;
+  const recurringAmount = $("#incomeForm")?.elements?.recurring_amount;
+  if (show && firstReceipt && !firstReceipt.value) firstReceipt.value = receiptDate || "";
+  if (show && recurringAmount && !recurringAmount.value) recurringAmount.value = $("#incomeForm")?.elements?.amount?.value || "";
+}
+
+function updateScopeForItem(item, kind) {
+  const hasGroup = kind === "despesa" ? item?.installment_group : item?.recurring_group;
+  if (!hasGroup) return "single";
+  const current = kind === "despesa" ? `${item.installment_number}/${item.installment_total}` : `${item.recurring_number}/${item.recurring_total}`;
+  const answer = window.prompt(
+    `Este lancamento faz parte do grupo ${item.description} (${current}).\nDigite:\n1 - Editar apenas esta parcela\n2 - Editar esta e as proximas\n3 - Editar todas as parcelas do grupo`,
+    "1"
+  );
+  if (answer === "2") return "future";
+  if (answer === "3") return "all";
+  return "single";
 }
 
 async function parseImportFile(file) {
@@ -623,12 +706,26 @@ async function registerAccount(event) {
 
 window.editExpense = (id) => {
   const item = state.expenses.find((row) => row.id === id);
-  if (item) fillForm($("#expenseForm"), item);
+  if (item) {
+    fillForm($("#expenseForm"), item);
+    if ($("#isInstallment")) $("#isInstallment").value = "Não";
+    toggleInstallmentFields();
+    if ($("#expenseGroupInfo")) {
+      $("#expenseGroupInfo").textContent = item.installment_group ? `Este lancamento faz parte do grupo ${item.description} (${item.installment_number}/${item.installment_total}).` : "";
+    }
+  }
 };
 
 window.editIncome = (id) => {
   const item = state.incomes.find((row) => row.id === id);
-  if (item) fillForm($("#incomeForm"), item);
+  if (item) {
+    fillForm($("#incomeForm"), item);
+    if ($("#isRecurringIncome")) $("#isRecurringIncome").value = "Não";
+    toggleIncomeRecurringFields();
+    if ($("#incomeGroupInfo")) {
+      $("#incomeGroupInfo").textContent = item.recurring_group ? `Este lancamento faz parte do grupo ${item.description} (${item.recurring_number}/${item.recurring_total}).` : "";
+    }
+  }
 };
 
 window.editUser = (id) => {
@@ -669,6 +766,13 @@ window.deleteIncome = async (id) => {
   await loadIncomes();
 };
 
+window.receiveIncome = async (id) => {
+  await api(`/api/incomes/${id}/receive`, { method: "POST", body: "{}" });
+  toast("Receita marcada como recebida.");
+  await loadIncomes();
+  await loadDashboard().catch(() => {});
+};
+
 window.payExpense = async (id) => {
   const paymentDate = prompt("Data de pagamento (AAAA-MM-DD):", new Date().toISOString().slice(0, 10));
   if (!paymentDate) return;
@@ -682,6 +786,13 @@ window.cancelFutureInstallments = async (id) => {
   const data = await api(`/api/expenses/${id}/cancel-future`, { method: "POST", body: "{}" });
   toast(`${data.cancelled} parcelas futuras canceladas.`);
   await loadExpenses();
+};
+
+window.cancelFutureIncomes = async (id) => {
+  if (!confirm("Cancelar receitas futuras pendentes?")) return;
+  const data = await api(`/api/incomes/${id}/cancel-future`, { method: "POST", body: "{}" });
+  toast(`${data.cancelled} receitas futuras canceladas.`);
+  await loadIncomes();
 };
 
 window.changeGoalAmount = async (id, action) => {
@@ -788,6 +899,7 @@ function bindEvents() {
   on("#clearIncomeForm", "click", () => clearForm($("#incomeForm")));
   on("#clearGoalForm", "click", () => clearForm($("#goalForm")));
   on("#isInstallment", "change", toggleInstallmentFields);
+  on("#isRecurringIncome", "change", toggleIncomeRecurringFields);
   on("#expenseStatus", "change", loadExpenses);
   on("#expenseCategory", "change", loadExpenses);
   on("#incomeStatus", "change", loadIncomes);
@@ -800,6 +912,8 @@ function bindEvents() {
   on("#clearUserForm", "click", () => clearForm($("#userForm")));
   on("#categoryForm", "submit", saveCategory);
   on("#clearCategoryForm", "click", () => clearForm($("#categoryForm")));
+  on("#maintenanceForm", "submit", saveMaintenanceSettings);
+  on("#runMaintenance", "click", runMaintenance);
   on("#downloadTemplate", "click", () => {
     window.location.href = "/api/import/template";
   });
