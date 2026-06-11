@@ -556,6 +556,7 @@ async function runMaintenance() {
 function toggleInstallmentFields() {
   const show = $("#isInstallment")?.value === "Sim";
   $$(".installment-fields").forEach((field) => field.classList.toggle("hidden", !show));
+  if ($("#expenseAmountLabel")) $("#expenseAmountLabel").textContent = show ? "Valor da parcela" : "Valor";
   const dueDate = $("#expenseForm")?.elements?.due_date?.value;
   const firstDue = $("#expenseForm")?.elements?.first_due_date;
   if (show && firstDue && !firstDue.value) firstDue.value = dueDate || "";
@@ -599,7 +600,7 @@ function importRowTitle(row) {
 }
 
 function importRowAmount(row) {
-  return row.amount || row.target_amount || row.total_amount || 0;
+  return row.amount || row.target_amount || row.installment_amount || row.total_amount || 0;
 }
 
 function renderImportPreview(data) {

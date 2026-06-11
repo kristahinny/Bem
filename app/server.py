@@ -65,11 +65,11 @@ IMPORT_SHEETS = {
         "sample": ["Reserva de Emergencia", "Meta inicial", "10000.00", "500.00", "2026-12-31"],
     },
     "PARCELADAS": {
-        "headers": ["descricao", "categoria", "valor_total", "valor_parcela", "quantidade_parcelas", "data_primeira_parcela", "status", "forma_pagamento", "observacao"],
-        "required_headers": ["descricao", "categoria", "valor_total", "quantidade_parcelas", "data_primeira_parcela"],
-        "aliases": {"parcelas": "quantidade_parcelas"},
-        "model_headers": ["Descrição", "Categoria", "Valor Total", "Valor Parcela", "Parcelas", "Data Primeira Parcela"],
-        "sample": ["Notebook", "Cartão de Crédito", "3000.00", "", "10", "2026-06-10"],
+        "headers": ["descricao", "categoria", "valor_parcela", "quantidade_parcelas", "data_primeira_parcela", "status", "forma_pagamento", "observacao"],
+        "required_headers": ["descricao", "categoria", "valor_parcela", "quantidade_parcelas", "data_primeira_parcela"],
+        "aliases": {"parcelas": "quantidade_parcelas", "valor_total": "valor_parcela"},
+        "model_headers": ["Descrição", "Categoria", "Valor Parcela", "Quantidade Parcelas", "Data Primeira Parcela"],
+        "sample": ["Cartão Nubank", "Cartão de Crédito", "11.50", "3", "2026-07-10"],
     },
 }
 
@@ -1730,7 +1730,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 if is_installment:
                     description = f"{payload['description']} ({index + 1}/{installment_total})"
                     due_date = add_months(first_due_date, index)
-                amount = round(payload["amount"] / installment_total, 2) if is_installment else payload["amount"]
+                amount = payload["amount"]
                 cur = conn.execute(
                     """
                     INSERT INTO expenses
@@ -2320,8 +2320,7 @@ class FinanceHandler(SimpleHTTPRequestHandler):
                 "tipo": "parcelada",
                 "description": description,
                 "category": category,
-                "total_amount": clean_money(row.get("valor_total")),
-                "installment_amount": clean_money(row.get("valor_parcela")) if str(row.get("valor_parcela", "")).strip() else None,
+                "installment_amount": clean_money(row.get("valor_parcela")),
                 "installment_total": total,
                 "first_due_date": clean_date(row.get("data_primeira_parcela")),
                 "status": status,
@@ -2556,8 +2555,8 @@ def insert_import_row(conn, row, user_id, stamp):
         return 1
     if kind == "parcelada":
         total = int(row["installment_total"])
-        amount = round(row["installment_amount"] if row.get("installment_amount") is not None else row["total_amount"] / total, 2)
-        group = hashlib.sha256(f'{user_id}|{row["description"]}|{row["category"]}|{row["total_amount"]}|{row["first_due_date"]}|{total}'.encode("utf-8")).hexdigest()[:16]
+        amount = round(row["installment_amount"], 2)
+        group = hashlib.sha256(f'{user_id}|{row["description"]}|{row["category"]}|{amount}|{row["first_due_date"]}|{total}|{stamp}'.encode("utf-8")).hexdigest()[:16]
         created = 0
         for number in range(1, total + 1):
             due_date = add_months(row["first_due_date"], number - 1)

@@ -164,7 +164,7 @@ def main():
             {
                 "description": "Notebook",
                 "category": "Cartão de Crédito",
-                "amount": 3000,
+                "amount": 300,
                 "due_date": "2026-06-20",
                 "status": "Pendente",
                 "is_installment": "Sim",
@@ -193,6 +193,50 @@ def main():
         future_after_paid = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])["cards"]["future_installments"]
         cancel_installments = request("POST", f"/api/expenses/{installment['ids'][0]}/cancel-future", {}, normal_login["token"])
         future_after_cancel_installments = request("GET", "/api/dashboard?month=6&year=2026", token=normal_login["token"])["cards"]["future_installments"]
+        nubank_three = request(
+            "POST",
+            "/api/expenses",
+            {
+                "description": "Cartao Nubank",
+                "category": "Cartao de Credito",
+                "amount": 11.50,
+                "due_date": "2026-07-10",
+                "status": "Pendente",
+                "is_installment": "Sim",
+                "installment_total": 3,
+                "first_due_date": "2026-07-10",
+            },
+            normal_login["token"],
+        )
+        nubank_two = request(
+            "POST",
+            "/api/expenses",
+            {
+                "description": "Cartao Nubank",
+                "category": "Cartao de Credito",
+                "amount": 53,
+                "due_date": "2026-07-15",
+                "status": "Pendente",
+                "is_installment": "Sim",
+                "installment_total": 2,
+                "first_due_date": "2026-07-15",
+            },
+            normal_login["token"],
+        )
+        request(
+            "PUT",
+            f"/api/expenses/{nubank_three['ids'][1]}",
+            {
+                "description": "Cartao Nubank (2/3)",
+                "category": "Cartao de Credito",
+                "amount": 10,
+                "due_date": "2026-08-10",
+                "status": "Pendente",
+                "notes": "Parcela ajustada individualmente",
+                "update_scope": "single",
+            },
+            normal_login["token"],
+        )
         request(
             "PUT",
             f"/api/incomes/{recurring_income['ids'][1]}",
@@ -290,7 +334,7 @@ def main():
                 ],
                 "PARCELADAS": [
                     server.IMPORT_SHEETS["PARCELADAS"]["model_headers"],
-                    ["Compra parcelada importada", "Cartao de Credito", "600", "250", "2", "2026-06-25"],
+                    ["Compra parcelada importada", "Cartao de Credito", "250", "2", "2026-06-25"],
                 ],
             }
         )
@@ -313,6 +357,7 @@ def main():
         normal_expenses = request("GET", "/api/expenses?month=6&year=2026", token=normal_login["token"])
         normal_incomes = request("GET", "/api/incomes?month=6&year=2026", token=normal_login["token"])
         july_expenses = request("GET", "/api/expenses?month=7&year=2026", token=normal_login["token"])
+        year_expenses = request("GET", "/api/expenses?year=2026", token=normal_login["token"])
         year_incomes = request("GET", "/api/incomes?year=2026", token=normal_login["token"])
         normal_goals = request("GET", "/api/goals", token=normal_login["token"])
         admin_expenses = request("GET", "/api/expenses?month=6&year=2026", token=admin_login["token"])
@@ -371,6 +416,11 @@ def main():
         assert_true(any(item["description"] == "Despesa importada" for item in normal_expenses["expenses"]), "despesa importada nao apareceu para o usuario")
         assert_true(any(item["description"] == "Compra parcelada importada (1/2)" for item in normal_expenses["expenses"]), "parcela importada nao apareceu para o usuario")
         assert_true(any(item["description"] == "Notebook (2/10)" and float(item["amount"]) == 250 for item in july_expenses["expenses"]), "edicao individual de parcela de despesa falhou")
+        nubank_three_rows = [item for item in year_expenses["expenses"] if item["id"] in nubank_three["ids"]]
+        nubank_two_rows = [item for item in year_expenses["expenses"] if item["id"] in nubank_two["ids"]]
+        assert_true(len(nubank_three_rows) == 3 and sorted(round(float(item["amount"]), 2) for item in nubank_three_rows) == [10.0, 11.5, 11.5], "parcelas de 11,50 nao foram geradas/editadas corretamente")
+        assert_true(len(nubank_two_rows) == 2 and all(round(float(item["amount"]), 2) == 53.0 for item in nubank_two_rows), "parcelas de 53,00 nao foram geradas corretamente")
+        assert_true(nubank_three_rows[0]["installment_group"] != nubank_two_rows[0]["installment_group"], "parcelamentos iguais foram agrupados indevidamente")
         assert_true(any(item["id"] == income["id"] for item in normal_incomes["incomes"]), "receita cadastrada nao apareceu para o usuario")
         assert_true(recurring_income["recurrences"] == 12 and cancel_recurring["cancelled"] == 10, "receita recorrente 12 meses ou cancelamento futuro falhou")
         assert_true(any(item["description"] == "Servico mensal (2/12)" and float(item["amount"]) == 400 and item["status"] == "Recebido" for item in year_incomes["incomes"]), "edicao individual ou recebimento de receita recorrente falhou")

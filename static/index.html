@@ -134,7 +134,7 @@
             <input type="hidden" name="id">
             <label>Descricao<input name="description" required></label>
             <label>Categoria<select name="category" required></select></label>
-            <label>Valor<input name="amount" type="number" step="0.01" min="0" required></label>
+            <label><span id="expenseAmountLabel">Valor</span><input name="amount" type="number" step="0.01" min="0" required></label>
             <label>Recebimento<input name="receipt_date" type="date" required></label>
             <label>Status<select name="status"><option>Recebido</option><option>Pendente</option></select></label>
             <label>Receita recorrente ou parcelada?<select id="isRecurringIncome" name="is_recurring"><option>Não</option><option>Sim</option></select></label>
